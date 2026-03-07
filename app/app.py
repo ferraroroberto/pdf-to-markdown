@@ -1,9 +1,16 @@
 """Streamlit entry point for the PDF → Markdown converter."""
 
+import logging
 import sys
 from pathlib import Path
 
 import streamlit as st
+
+# Suppress "missing ScriptRunContext" warnings when the main thread is in a nested
+# event loop (e.g. tkinter file dialog). Streamlit says these can be ignored in bare mode.
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(
+    logging.ERROR
+)
 
 # Ensure project root is on sys.path so src.* imports resolve
 sys.path.insert(0, str(Path(__file__).parent.parent))
