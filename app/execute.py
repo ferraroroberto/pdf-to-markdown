@@ -350,6 +350,9 @@ def run() -> None:
             st.session_state.ex_running = False
             if not result_q.empty():
                 st.session_state.ex_result = result_q.get_nowait()
+            # Rerun so the top of the page (Browse, Execute/Cancel) re-renders
+            # with running=False; otherwise they stay disabled/stuck on Cancel.
+            st.rerun()
 
     # ── 5. Render logs ─────────────────────────────────────────────────────
     if st.session_state.ex_logs:
