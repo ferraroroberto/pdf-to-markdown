@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html as html_module
 import io
 import logging
 import queue
@@ -146,6 +145,13 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
+def _clear_output() -> None:
+    """Clear execution log, result, and all content below (log + result sections)."""
+    st.session_state.ex_logs = []
+    st.session_state.ex_result = None
+    st.session_state.ex_output_path = None
+
+
 # ── Tab UI ─────────────────────────────────────────────────────────────────────
 
 
@@ -210,25 +216,13 @@ def run() -> None:
                 except Exception:  # noqa: BLE001
                     pass
 
-            st.markdown(
-                "<style>.file-info-block { font-size: 0.85rem; line-height: 1.4; color: inherit; }</style>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                f'<div class="file-info-block">'
-                f'<div><strong>Filename:</strong> {html_module.escape(p.name)}</div>'
-                f'<div><strong>Folder:</strong> {html_module.escape(str(p.parent))}</div>'
-                f'<div><strong>Size:</strong> {size_kb:,.1f} KB  ·  <strong>Pages:</strong> {pages_val}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            if pdf_info is not None:
-                st.caption(
-                    f"Classification: **{pdf_info.classification}**  ·  "
-                    f"Avg chars/page: **{pdf_info.avg_chars_per_page:.0f}**  ·  "
-                    f"Scanned: **{'Yes' if pdf_info.is_scanned else 'No'}**"
-                )
+            # File info: Size, Pages, Classification (and extras when available) in one line
+            cols = st.columns(5)
+            cols[0].metric("Size", f"{size_kb:,.1f} KB")
+            cols[1].metric("Pages", pages_val)
+            cols[2].metric("Classification", pdf_info.classification if pdf_info is not None else "—")
+            cols[3].metric("Avg chars/page", f"{pdf_info.avg_chars_per_page:.0f}" if pdf_info is not None else "—")
+            cols[4].metric("Scanned", "Yes" if pdf_info and pdf_info.is_scanned else ("No" if pdf_info else "—"))
 
     st.divider()
 
@@ -257,14 +251,17 @@ def run() -> None:
         )
 
     with col_validate:
+        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)  # align with selectbox
         validate_output: bool = st.checkbox(
             "Validate",
+            value=True,
             help="Run quality validation after conversion (character similarity, headings, tables).",
             key="validate_check",
             disabled=running,
         )
 
     with col_verbose:
+        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)  # align with selectbox
         verbose: bool = st.checkbox(
             "Verbose",
             help="Show DEBUG-level log messages.",
@@ -277,45 +274,59 @@ def run() -> None:
 
     st.divider()
 
-    # ── 3. Execute / Cancel button ─────────────────────────────────────────
-    # NOTE: we intentionally do NOT call st.rerun() inside these handlers.
+    # ── 3. Execute / Clear / Cancel buttons ─────────────────────────────────
+    # NOTE: we intentionally do NOT call st.rerun() inside Execute/Cancel handlers.
     # Letting the script continue to steps 4-7 ensures the log/result sections
     # are reached with the freshly-cleared state, so they render nothing and
     # the old output disappears immediately without a flash.
     if not running:
-        if st.button(
-            "⚡  Execute",
-            type="primary",
-            disabled=(pdf_path is None),
-            use_container_width=True,
-            key="execute_btn",
-        ):
-            if pdf_path is None:
-                st.warning("Please select a valid PDF file first.")
-                st.stop()
+        col_execute, col_clear = st.columns([1, 1])
+        with col_execute:
+            if st.button(
+                "⚡  Execute",
+                type="primary",
+                disabled=(pdf_path is None),
+                use_container_width=True,
+                key="execute_btn",
+            ):
+                if pdf_path is None:
+                    st.warning("Please select a valid PDF file first.")
+                    st.stop()
 
-            selected_backend: str | None = (
-                None if backend_choice == "auto" else backend_choice
-            )
+                # Step 1: clear all content below (log + result)
+                _clear_output()
 
-            log_q: queue.Queue = queue.Queue()
-            result_q: queue.Queue = queue.Queue()
+                selected_backend: str | None = (
+                    None if backend_choice == "auto" else backend_choice
+                )
 
-            thread = threading.Thread(
-                target=_run_conversion,
-                args=(pdf_path, selected_backend, validate_output, verbose, result_q, log_q),
-                daemon=True,
-            )
-            thread.start()
+                log_q: queue.Queue = queue.Queue()
+                result_q: queue.Queue = queue.Queue()
 
-            # Clear previous output before the script reaches sections 5 and 7
-            st.session_state.ex_logs = []
-            st.session_state.ex_result = None
-            st.session_state.ex_running = True
-            st.session_state.ex_log_q = log_q
-            st.session_state.ex_result_q = result_q
-            st.session_state.ex_output_path = pdf_path.with_suffix(".md")
-            # No st.rerun() — script continues; sections 5/7 see empty state
+                thread = threading.Thread(
+                    target=_run_conversion,
+                    args=(pdf_path, selected_backend, validate_output, verbose, result_q, log_q),
+                    daemon=True,
+                )
+                thread.start()
+
+                # Step 2: run conversion (state for polling)
+                st.session_state.ex_running = True
+                st.session_state.ex_log_q = log_q
+                st.session_state.ex_result_q = result_q
+                st.session_state.ex_output_path = pdf_path.with_suffix(".md")
+                # No st.rerun() — script continues; sections 5/7 see empty state
+
+        with col_clear:
+            if st.button(
+                "🗑️  Clear",
+                type="secondary",
+                use_container_width=True,
+                key="clear_btn",
+                help="Clear the execution log and result; removes all content below.",
+            ):
+                _clear_output()
+                st.rerun()
 
     else:
         if st.button(
@@ -354,28 +365,41 @@ def run() -> None:
             # with running=False; otherwise they stay disabled/stuck on Cancel.
             st.rerun()
 
-    # ── 5. Render logs ─────────────────────────────────────────────────────
-    if st.session_state.ex_logs:
+    # ── 5. Render logs (single container to avoid "two boxes" flash) ─────────
+    if st.session_state.ex_running or st.session_state.ex_logs:
         import html as _html
 
-        st.subheader("📋 Execution Log")
         log_html = _html.escape("\n".join(st.session_state.ex_logs))
-        st.markdown(
-            f"""<div style="
-                height: 320px;
-                overflow: auto;
-                background: #0d1117;
-                border: 1px solid #30363d;
-                border-radius: 6px;
-                padding: 12px 16px;
-                font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-                font-size: 0.78rem;
-                line-height: 1.55;
-                white-space: pre;
-                color: #e6edf3;
-            ">{log_html}</div>""",
-            unsafe_allow_html=True,
-        )
+        # Single markdown block: title + log div in one element so Streamlit
+        # doesn't render two separate blocks (subheader + div) that can appear
+        # as two boxes and then collapse to one on rerun.
+        with st.container(key="execution_log_container"):
+            st.markdown(
+                f"""<div class="exec-log-outer" style="
+                    margin-bottom: 1rem;
+                ">
+                    <div style="
+                        font-size: 1.1rem;
+                        font-weight: 600;
+                        color: inherit;
+                        margin-bottom: 0.5rem;
+                    ">📋 Execution Log</div>
+                    <div style="
+                        height: 320px;
+                        overflow: auto;
+                        background: #0d1117;
+                        border: 1px solid #30363d;
+                        border-radius: 6px;
+                        padding: 12px 16px;
+                        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                        font-size: 0.78rem;
+                        line-height: 1.55;
+                        white-space: pre;
+                        color: #e6edf3;
+                    ">{log_html}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
     # ── 6. Keep polling while still running ────────────────────────────────
     if st.session_state.ex_running:
