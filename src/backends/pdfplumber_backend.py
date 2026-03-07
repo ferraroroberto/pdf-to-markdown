@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pdfplumber
 
-from pdf2md.backends.base import BaseBackend
+from src.backends.base import BaseBackend
 
 
 class PdfplumberBackend(BaseBackend):
@@ -34,7 +34,9 @@ class PdfplumberBackend(BaseBackend):
     def convert(self, pdf_path: Path, **kwargs: object) -> tuple[str, dict]:
         crop_header: float = float(kwargs.get("crop_header", 50))
         crop_footer: float = float(kwargs.get("crop_footer", 50))
+        crop_margin_left: float = float(kwargs.get("crop_margin_left", 45))
         detect_headings: bool = bool(kwargs.get("detect_headings", True))
+        min_column_gap: float = float(kwargs.get("min_column_gap", 18))
         table_settings: dict = dict(kwargs.get("table_settings", {})) if kwargs.get("table_settings") else {
             "vertical_strategy": "lines_strict",
             "horizontal_strategy": "lines_strict",
@@ -56,8 +58,8 @@ class PdfplumberBackend(BaseBackend):
 
             for page in pdf.pages:
                 page_md = self._process_page(
-                    page, crop_header, crop_footer, detect_headings,
-                    table_settings, median_size,
+                    page, crop_header, crop_footer, crop_margin_left,
+                    detect_headings, table_settings, median_size, min_column_gap,
                 )
                 page_outputs.append(page_md)
 
@@ -85,22 +87,55 @@ class PdfplumberBackend(BaseBackend):
         page: pdfplumber.page.Page,
         crop_header: float,
         crop_footer: float,
+        crop_margin_left: float,
         detect_headings: bool,
         table_settings: dict,
         median_size: float,
+        min_column_gap: float,
     ) -> str:
         bbox = page.bbox  # (x0, y0, x1, y1)
         crop_box = (
-            bbox[0],
+            bbox[0] + crop_margin_left,
             bbox[1] + crop_header,
             bbox[2],
             bbox[3] - crop_footer,
         )
         # Clamp so we don't invert the crop region
-        if crop_box[1] >= crop_box[3]:
+        if crop_box[1] >= crop_box[3] or crop_box[0] >= crop_box[2]:
             crop_box = bbox
         cropped = page.crop(crop_box)
 
+        # Detect column boundaries so we read left column then right column
+        column_bboxes = self._detect_columns(cropped, min_column_gap)
+        if len(column_bboxes) <= 1:
+            return self._process_page_region(
+                cropped, crop_box, table_settings, detect_headings, median_size,
+            )
+
+        # Multi-column: process each column and concatenate in reading order
+        parts: list[str] = []
+        for col_bbox in column_bboxes:
+            # Crop to this column (in page coords, cropped is already in crop_box space)
+            col_crop = page.crop((
+                col_bbox[0], crop_box[1], col_bbox[1], crop_box[3],
+            ))
+            part = self._process_page_region(
+                col_crop, (col_bbox[0], crop_box[1], col_bbox[1], crop_box[3]),
+                table_settings, detect_headings, median_size,
+            )
+            if part.strip():
+                parts.append(part.strip())
+        return "\n\n".join(parts)
+
+    def _process_page_region(
+        self,
+        cropped: pdfplumber.page.Page,
+        region_bbox: tuple[float, float, float, float],
+        table_settings: dict,
+        detect_headings: bool,
+        median_size: float,
+    ) -> str:
+        """Extract text and tables from a single page region (e.g. one column)."""
         # Extract tables and their bounding boxes
         tables = cropped.find_tables(table_settings=table_settings)
         table_bboxes = [t.bbox for t in tables]
@@ -110,17 +145,12 @@ class PdfplumberBackend(BaseBackend):
         chars = cropped.chars
         text_chars = [c for c in chars if not self._char_in_any_bbox(c, table_bboxes)]
 
-        # Group characters into lines with font-size info
+        # Group characters into lines with font-size info (by y only; single column)
         lines_with_sizes = self._chars_to_lines_with_sizes(text_chars)
 
-        # Build markdown for text lines
-        parts: list[str] = []
-        table_idx = 0
-
-        # We need to interleave text and tables by y-position
         table_entries: list[tuple[float, str]] = []
         for bbox_t, data in zip(table_bboxes, table_data_list):
-            y_pos = bbox_t[1]  # top of table
+            y_pos = bbox_t[1]
             table_md = self._table_to_markdown(data)
             table_entries.append((y_pos, table_md))
 
@@ -136,15 +166,12 @@ class PdfplumberBackend(BaseBackend):
 
             formatted = stripped
 
-            # Detect list items
             if bullet_re.match(stripped):
                 formatted = re.sub(r"^[\s]*[•●◦\-\*]\s+", "- ", stripped)
             elif numbered_re.match(stripped):
                 match = re.match(r"^[\s]*(\d+)[.)]\s+(.*)", stripped)
                 if match:
                     formatted = f"{match.group(1)}. {match.group(2)}"
-
-            # Detect headings by font size
             elif detect_headings and avg_size > 0 and median_size > 0:
                 ratio = avg_size / median_size
                 if ratio > 1.7:
@@ -154,11 +181,49 @@ class PdfplumberBackend(BaseBackend):
 
             text_entries.append((y_pos, formatted))
 
-        # Merge text and table entries by y-position
         all_entries: list[tuple[float, str]] = text_entries + table_entries
         all_entries.sort(key=lambda e: e[0])
-
         return "\n".join(entry[1] for entry in all_entries)
+
+    def _detect_columns(
+        self, cropped: pdfplumber.page.Page, min_gap: float,
+    ) -> list[tuple[float, float]]:
+        """Infer column bboxes (x0, x1) by finding horizontal gaps in character positions.
+        Returns a list of (x0, x1) for each column in left-to-right order.
+        """
+        chars = cropped.chars
+        if not chars:
+            return [(cropped.bbox[0], cropped.bbox[2])]
+
+        # Collect x midpoints of chars
+        x_midpoints = [
+            (float(c["x0"]) + float(c["x1"])) / 2 for c in chars
+        ]
+        x0, x1 = cropped.bbox[0], cropped.bbox[2]
+        width = x1 - x0
+        # Consider x positions across the content (middle 20%-80% to skip margins)
+        lo, hi = x0 + 0.20 * width, x1 - 0.20 * width
+        in_region = [m for m in x_midpoints if lo <= m <= hi]
+        if len(in_region) < 2:
+            return [(x0, x1)]
+        # Sort and find gaps between consecutive distinct x (round to 2pt to group)
+        rounded = sorted(set(round(m, 2) for m in in_region))
+        gaps: list[tuple[float, float, float]] = []
+        for i in range(len(rounded) - 1):
+            gap = rounded[i + 1] - rounded[i]
+            if gap >= min_gap:
+                gaps.append((rounded[i], rounded[i + 1], gap))
+        if not gaps:
+            return [(x0, x1)]
+
+        # Largest gap in the middle half of the page is the column divider
+        mid_lo, mid_hi = x0 + 0.35 * width, x1 - 0.35 * width
+        mid_gaps = [g for g in gaps if mid_lo <= g[0] <= mid_hi or mid_lo <= g[1] <= mid_hi]
+        if mid_gaps:
+            gaps = mid_gaps
+        gaps.sort(key=lambda g: g[2], reverse=True)
+        split_x = (gaps[0][0] + gaps[0][1]) / 2
+        return [(x0, split_x), (split_x, x1)]
 
     # ------------------------------------------------------------------
     # Helpers

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Allow running this file directly: ensure project root is on path for "src" imports
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+
 import pytest
 
-from pdf2md.models import ConversionResult, ValidationReport
-from pdf2md.postprocess import postprocess
-from pdf2md.validation import _strip_markdown, _count_tables, _check_table_row_consistency
+from src.models import ConversionResult, ValidationReport
+from src.postprocess import postprocess
+from src.validation import _strip_markdown, _count_tables, _check_table_row_consistency
 
 
 # ======================================================================
@@ -215,3 +223,7 @@ class TestModels:
         summary = report.summary()
         assert "PASS" in summary
         assert "95" in summary
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

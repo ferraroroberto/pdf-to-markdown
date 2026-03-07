@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pdf2md.backends.base import BaseBackend
-from pdf2md.backends.docling_backend import DoclingBackend
-from pdf2md.backends.marker_backend import MarkerBackend
-from pdf2md.backends.pdfplumber_backend import PdfplumberBackend
+from src.backends.base import BaseBackend
+from src.backends.docling_backend import DoclingBackend
+from src.backends.marker_backend import MarkerBackend
+from src.backends.pdfplumber_backend import PdfplumberBackend
 
 BACKEND_REGISTRY: list[type[BaseBackend]] = [
     MarkerBackend,

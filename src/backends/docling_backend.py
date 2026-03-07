@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pdf2md.backends.base import BaseBackend
+from src.backends.base import BaseBackend
 
 
 class DoclingBackend(BaseBackend):

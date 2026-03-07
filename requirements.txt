@@ -1,0 +1,16 @@
+# Core
+pymupdf>=1.24.0
+click>=8.0
+rich>=13.0
+
+# Backends (all installed by default)
+pdfplumber>=0.11.0
+marker-pdf>=1.0.0
+docling>=2.50.0
+
+# Streamlit UI
+streamlit>=1.35.0
+
+# Dev/test
+pytest>=8.0
+pytest-cov
