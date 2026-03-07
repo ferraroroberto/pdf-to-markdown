@@ -8,7 +8,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-from pdf2md.models import ValidationReport
+from src.models import ValidationReport
 
 
 def validate(pdf_path: str | Path, markdown: str) -> ValidationReport:

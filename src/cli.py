@@ -10,9 +10,10 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from pdf2md.backends import BACKEND_REGISTRY, list_available
-from pdf2md.pipeline import Pipeline
-from pdf2md.validation import validate as run_validation
+from src.backends import BACKEND_REGISTRY, get_best_available, list_available
+from src.classifier import classify_pdf
+from src.pipeline import Pipeline
+from src.validation import validate as run_validation
 
 console = Console()
 
@@ -26,9 +27,9 @@ def _setup_logging(verbose: bool) -> None:
 
 
 @click.group()
-@click.version_option(package_name="pdf2md")
+@click.version_option(version="0.1.0")
 def main() -> None:
-    """pdf2md — Convert PDF documents into clean Markdown for LLMs."""
+    """Convert PDF documents into clean Markdown for LLMs."""
 
 
 @main.command()
@@ -45,6 +46,8 @@ def main() -> None:
 @click.option("--force-ocr", is_flag=True, help="Force OCR even on born-digital PDFs.")
 @click.option("--page-range", type=str, default=None,
               help="Page range to convert (e.g. '0-5').")
+@click.option("--device", type=click.Choice(["cuda", "cpu", "mps"]), default=None,
+              help="Device for marker backend (cuda=m GPU, mps=Apple Silicon). Default: auto (GPU if available).")
 @click.option("-v", "--verbose", is_flag=True, help="Enable debug logging.")
 def convert(
     input_path: str,
@@ -54,20 +57,25 @@ def convert(
     workers: int,
     force_ocr: bool,
     page_range: str | None,
+    device: str | None,
     verbose: bool,
 ) -> None:
     """Convert a single PDF or a directory of PDFs to Markdown."""
     _setup_logging(verbose)
 
-    backend_name = None if backend == "auto" else backend
-    pipe = Pipeline(backend=backend_name)
-
     input_p = Path(input_path)
+    if backend == "auto":
+        backend_name = _prompt_backend_choice(input_p)
+    else:
+        backend_name = backend
+    pipe = Pipeline(backend=backend_name)
     backend_kwargs: dict = {}
     if force_ocr:
         backend_kwargs["force_ocr"] = True
     if page_range:
         backend_kwargs["page_range"] = page_range
+    if device is not None:
+        backend_kwargs["device"] = device
 
     if input_p.is_dir():
         if not output_path:
@@ -112,7 +120,7 @@ def validate(pdf_path: str, markdown_path: str) -> None:
 def backends() -> None:
     """List available extraction backends."""
     available = set(list_available())
-    table = Table(title="pdf2md Backends")
+    table = Table(title="Backends")
     table.add_column("Backend", style="cyan")
     table.add_column("Status")
     table.add_column("Scanned PDF Support")
@@ -129,6 +137,51 @@ def backends() -> None:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+
+def _prompt_backend_choice(input_path: Path) -> str:
+    """Ask user to pick a backend; recommend one based on input (and PDF type if file)."""
+    available = list_available()
+    if not available:
+        raise RuntimeError(
+            "No PDF extraction backend is available. "
+            "Install at least pdfplumber (pip install pdfplumber)."
+        )
+
+    needs_ocr = False
+    if input_path.is_file() and input_path.suffix.lower() == ".pdf":
+        try:
+            pdf_info = classify_pdf(input_path)
+            needs_ocr = pdf_info.is_scanned
+        except Exception:
+            pass
+    elif input_path.is_dir():
+        first_pdf = next(input_path.rglob("*.pdf"), None)
+        if first_pdf:
+            try:
+                pdf_info = classify_pdf(first_pdf)
+                needs_ocr = pdf_info.is_scanned
+            except Exception:
+                pass
+
+    recommended = get_best_available(needs_ocr=needs_ocr)
+    recommended_name = recommended.name
+    # Order: recommended first, then rest of available
+    ordered = [recommended_name] + [b for b in available if b != recommended_name]
+    labels = []
+    for i, name in enumerate(ordered, 1):
+        tag = " (recommended)" if name == recommended_name else ""
+        labels.append(f"{i}. {name}{tag}")
+    console.print("\n[bold]Choose extraction backend:[/bold]")
+    console.print("  " + "  ".join(labels))
+    choice = click.prompt(
+        "Select",
+        type=click.IntRange(1, len(ordered)),
+        default=1,
+        show_default=True,
+    )
+    return ordered[choice - 1]
+
 
 def _print_summary(result) -> None:  # noqa: ANN001
     """Print a short summary of a conversion result."""

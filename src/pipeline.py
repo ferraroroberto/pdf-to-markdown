@@ -6,13 +6,13 @@ import logging
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from pdf2md.backends import get_backend, get_best_available
-from pdf2md.classifier import classify_pdf
-from pdf2md.models import ConversionResult
-from pdf2md.postprocess import postprocess
-from pdf2md.validation import validate
+from src.backends import get_backend, get_best_available
+from src.classifier import classify_pdf
+from src.models import ConversionResult
+from src.postprocess import postprocess
+from src.validation import validate
 
-logger = logging.getLogger("pdf2md")
+logger = logging.getLogger("pipeline")
 
 
 class Pipeline:
