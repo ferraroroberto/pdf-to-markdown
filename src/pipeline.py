@@ -30,7 +30,7 @@ class Pipeline:
 
         # Eagerly validate a forced backend name
         if backend is not None:
-            known = ["marker", "docling", "pdfplumber", "vertexai"]
+            known = ["marker", "pdfplumber", "vertexai"]
             if backend not in known:
                 raise ValueError(f"Unknown backend '{backend}'. Choose from {known}")
 

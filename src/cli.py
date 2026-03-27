@@ -37,7 +37,7 @@ def main() -> None:
 @click.option("-o", "--output", "output_path", type=click.Path(), default=None,
               help="Output file or directory.")
 @click.option("-b", "--backend",
-              type=click.Choice(["marker", "docling", "pdfplumber", "auto"]),
+              type=click.Choice(["marker", "pdfplumber", "vertexai", "auto"]),
               default="auto", help="Extraction backend.")
 @click.option("--validate", "validate_output", is_flag=True,
               help="Run quality validation on the output.")

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from src.backends.base import BaseBackend
@@ -20,6 +20,27 @@ _DEFAULT_REFINEMENT_PROMPT = "prompts/refinement.md"
 # Gemini model parameters
 _TEMPERATURE = 0.2
 _MAX_OUTPUT_TOKENS = 65536
+
+# In JSON, \b \f \r are technically valid (backspace, form-feed, CR), but in
+# LaTeX/Markdown documents they almost always signal \begin, \frac, \right etc.
+# We deliberately exclude b, f, r so they get doubled like any other LaTeX command.
+# We keep \n and \t because the model genuinely uses them for newlines/tabs in strings.
+_VALID_SINGLE_ESCAPES: frozenset[str] = frozenset('"\\/nt')
+_HEX_CHARS: frozenset[str] = frozenset('0123456789abcdefABCDEF')
+
+
+def _load_config_clean_stop_max_errors() -> int | None:
+    """Read clean_stop_max_errors from config.json, or return None if not set."""
+    config_path = _project_root() / "config.json"
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            val = data.get("vertexai", {}).get("clean_stop_max_errors")
+            if val is not None:
+                return int(val)
+        except Exception:  # noqa: BLE001
+            pass
+    return None
 
 
 def _project_root() -> Path:
@@ -46,6 +67,67 @@ def _load_prompt(prompt_file: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _repair_json_escapes(text: str) -> str:
+    """Walk JSON text character-by-character and double any backslash inside a string
+    literal that does not form a valid JSON escape sequence.
+
+    Valid sequences: \\" \\/ \\\\ \\b \\f \\n \\r \\t \\uXXXX (4 hex digits).
+    Everything else (\\alpha, \\url, \\frac, \\upsilon …) gets doubled to \\\\.
+    Skips content outside string literals so structural JSON characters are untouched.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch != '"':
+            out.append(ch)
+            i += 1
+            continue
+        # Enter a JSON string literal
+        out.append(ch)
+        i += 1
+        while i < n:
+            ch = text[i]
+            if ch == '"':
+                # Closing quote — end of string
+                out.append(ch)
+                i += 1
+                break
+            if ch != '\\':
+                out.append(ch)
+                i += 1
+                continue
+            # Backslash: inspect the next character
+            if i + 1 >= n:
+                out.append(ch)
+                i += 1
+                break
+            nxt = text[i + 1]
+            if nxt in _VALID_SINGLE_ESCAPES:
+                # Valid single-char escape — emit as-is
+                out.append(ch)
+                out.append(nxt)
+                i += 2
+            elif nxt == 'u':
+                # \uXXXX — valid only if followed by exactly 4 hex digits
+                hex4 = text[i + 2: i + 6]
+                if len(hex4) == 4 and all(c in _HEX_CHARS for c in hex4):
+                    out.append(ch)
+                    out.append(nxt)
+                    out.append(hex4)
+                    i += 6
+                else:
+                    # e.g. \url, \underbrace — double the backslash
+                    out.append('\\\\')
+                    i += 1
+            else:
+                # Invalid escape (e.g. \a \c \e \p \f-as-in-\frac …) — double it
+                out.append('\\\\')
+                i += 1
+    return ''.join(out)
+
+
 def _parse_refinement_response(text: str) -> dict:
     """Parse the JSON response from a refinement step.
 
@@ -64,8 +146,17 @@ def _parse_refinement_response(text: str) -> dict:
 
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
-        logger.warning("⚠️ Failed to parse JSON refinement response: %s", exc)
+    except json.JSONDecodeError:
+        # The model often embeds LaTeX/Markdown with bare backslashes (e.g. \alpha, \url)
+        # inside the corrected_markdown JSON string, which is illegal.
+        # Use a character-level scanner to repair only invalid escape sequences.
+        repaired = _repair_json_escapes(text)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            pos = exc.pos or 0
+            snippet = repaired[max(0, pos - 30): pos + 30].replace("\n", "↵")
+            logger.warning("⚠️ Failed to parse JSON refinement response: %s | near: %r", exc, snippet)
         return {
             "iteration_summary": {
                 "iteration": 0,
@@ -166,6 +257,14 @@ class VertexAIBackend(BaseBackend):
         model_id: str = str(kwargs.get("model_id", os.getenv("MODEL_ID", "gemini-2.5-pro")))
         api_key: str = str(kwargs.get("api_key", os.getenv("GOOGLE_API_KEY", "")))
         refine_iterations: int = int(kwargs.get("refine_iterations", 0))  # type: ignore[arg-type]
+        # Max errors to accept a CLEAN verdict for early stop.
+        # -1 = stop on any CLEAN verdict (legacy); 0 = only stop if 0 errors; N = stop if errors <= N.
+        _raw_cse = kwargs.get("clean_stop_max_errors", _load_config_clean_stop_max_errors())
+        # Explicit 0 is a valid threshold — treat None as "no config" → default -1 (stop on any CLEAN)
+        clean_stop_max_errors: int = int(_raw_cse) if _raw_cse is not None else -1  # type: ignore[arg-type]
+        if refine_iterations > 0:
+            _cse_label = "any CLEAN" if clean_stop_max_errors < 0 else f"errors ≤ {clean_stop_max_errors}"
+            logger.info("ℹ️ Early-stop threshold: %s", _cse_label)
         extraction_prompt_file: str = str(
             kwargs.get("extraction_prompt_file", _DEFAULT_EXTRACTION_PROMPT)
         )
@@ -280,6 +379,8 @@ class VertexAIBackend(BaseBackend):
 
         track_record: list[dict] = []
         all_corrections: list[dict] = []
+        # step_01 = raw extraction; subsequent entries = after each refinement pass
+        iteration_markdowns: list[str] = [current_markdown]
         cumulative_log = ""
         final_verdict = "N/A"
 
@@ -298,7 +399,10 @@ class VertexAIBackend(BaseBackend):
                 '- "corrections": a list of objects, each with keys "location" (str), "category" (str), '
                 '"severity" (str), "pdf_says" (str), "markdown_had" (str), "corrected_to" (str), "risk" (str)\n'
                 '- "corrected_markdown": the full corrected Markdown document as a single string\n\n'
-                "Return ONLY the JSON object. No preamble, no markdown fences, no commentary outside the JSON.\n\n"
+                "Return ONLY the JSON object. No preamble, no markdown fences, no commentary outside the JSON.\n"
+                "IMPORTANT: All backslashes inside JSON string values MUST be double-escaped. "
+                r'For example, LaTeX \alpha must be written as \\alpha in the JSON string, '
+                r'and \frac{a}{b} must be written as \\frac{a}{b}.' "\n\n"
                 "---\n\n"
                 "## Current Markdown to audit:\n\n"
                 f"{current_markdown}\n\n"
@@ -364,10 +468,24 @@ class VertexAIBackend(BaseBackend):
 
             cumulative_log = _build_cumulative_log_text(track_record, all_corrections)
             current_markdown = corrected_markdown
+            iteration_markdowns.append(current_markdown)
 
             if verdict == "CLEAN":
-                logger.info("ℹ️ Document is CLEAN after %d refinement(s). Stopping early.", i)
-                break
+                # Honour the acceptance threshold: -1 = accept any CLEAN; >= 0 = accept only if
+                # errors_found <= threshold.
+                threshold_met = clean_stop_max_errors < 0 or errors_found <= clean_stop_max_errors
+                if threshold_met:
+                    logger.info(
+                        "ℹ️ Document is CLEAN with %d error(s) (threshold=%s). Stopping early.",
+                        errors_found,
+                        "any" if clean_stop_max_errors < 0 else clean_stop_max_errors,
+                    )
+                    break
+                else:
+                    logger.info(
+                        "ℹ️ CLEAN verdict but %d error(s) > threshold=%d — continuing.",
+                        errors_found, clean_stop_max_errors,
+                    )
 
             if i >= 2:
                 prev_errors = track_record[-2]["errors_found"]
@@ -389,6 +507,8 @@ class VertexAIBackend(BaseBackend):
             "total_output_tokens": total_output_tokens,
             "total_tokens": total_tokens,
             "refinement_log": track_record,
+            "all_corrections": all_corrections,
+            "iteration_markdowns": iteration_markdowns,
         }
 
         logger.info(

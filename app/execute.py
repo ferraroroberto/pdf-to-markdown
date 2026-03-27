@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import os
 import queue
@@ -16,9 +17,26 @@ from pathlib import Path
 import streamlit as st
 
 # src.* is importable because app.py prepended the project root to sys.path
+from src import vertexai_pricing
 from src.backends import list_available
 from src.classifier import classify_pdf
 from src.pipeline import Pipeline
+
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _load_config_default(section: str, key: str, default: object) -> object:
+    """Read a value from config.json; return *default* if not found."""
+    config_path = _PROJECT_ROOT / "config.json"
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            val = data.get(section, {}).get(key)
+            if val is not None:
+                return val
+        except Exception:  # noqa: BLE001
+            pass
+    return default
 
 # Gemini model options shown in the UI (order = dropdown order)
 _VAI_MODELS: list[str] = [
@@ -26,13 +44,6 @@ _VAI_MODELS: list[str] = [
     "gemini-2.5-flash",
     "gemini-3.1-flash-lite-preview",
 ]
-
-# Approximate pricing per million tokens (USD); preview models billed at Flash-Lite rates
-_GEMINI_PRICING: dict[str, dict[str, float]] = {
-    "gemini-2.5-pro":                {"input": 1.25,  "output": 10.0},
-    "gemini-2.5-flash":              {"input": 0.075, "output": 0.30},
-    "gemini-3.1-flash-lite-preview": {"input": 0.0,   "output": 0.0},  # preview — no public price yet
-}
 
 
 # ── Stream tee (captures tqdm / print output) ──────────────────────────────────
@@ -108,7 +119,6 @@ class _QueueHandler(logging.Handler):
 def _run_conversion(
     pdf_path: Path,
     backend: str | None,
-    validate: bool,
     verbose: bool,
     result_queue: queue.Queue,
     log_queue: queue.Queue,
@@ -117,7 +127,7 @@ def _run_conversion(
     """Runs in a background thread; streams log lines and pushes final result.
 
     Redirects sys.stdout and sys.stderr through _TeeStream so that tqdm progress
-    bars (written directly to stderr by marker / docling) appear in the log queue.
+    bars (written directly to stderr by marker) appear in the log queue.
     """
     # ── Redirect stdout/stderr to capture tqdm and print() calls ──────────
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
@@ -133,7 +143,7 @@ def _run_conversion(
 
     try:
         pipe = Pipeline(backend=backend)
-        result = pipe.convert(pdf_path, validate_output=validate, **(backend_kwargs or {}))
+        result = pipe.convert(pdf_path, validate_output=False, **(backend_kwargs or {}))
         result_queue.put(("ok", result))
     except Exception as exc:  # noqa: BLE001
         result_queue.put(("error", str(exc)))
@@ -155,6 +165,7 @@ def _init_state() -> None:
         "ex_log_q": None,
         "ex_result_q": None,
         "ex_output_path": None,
+        "ex_verbose": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -162,10 +173,112 @@ def _init_state() -> None:
 
 
 def _clear_output() -> None:
-    """Clear execution log, result, and all content below (log + result sections)."""
+    """Clear execution log, result, and all content below (log + result sections).
+
+    Also removes any step/corrections files written by the previous run so the
+    output folder never contains artefacts from a run that is no longer current.
+    """
+    prev_output: Path | None = st.session_state.get("ex_output_path")
+    if prev_output is not None:
+        prev_output.unlink(missing_ok=True)
+        for stale in prev_output.parent.glob(f"{prev_output.stem}.step_*.md"):
+            stale.unlink(missing_ok=True)
+        _corr = prev_output.with_suffix(".corrections.md")
+        if _corr.exists():
+            _corr.unlink()
+
     st.session_state.ex_logs = []
     st.session_state.ex_result = None
     st.session_state.ex_output_path = None
+    st.session_state.ex_verbose = False
+
+
+# ── Corrections report writer ──────────────────────────────────────────────────
+
+
+def _save_corrections_report(result, output_path: Path) -> Path | None:
+    """Write a human-readable markdown corrections report next to the output file.
+
+    File name: <stem>.corrections.md
+    Saved only when there is refinement data (track_record or corrections).
+    Returns the saved path, or None if nothing to save.
+    """
+    from datetime import datetime, timezone
+
+    meta = result.metadata
+    track_record: list[dict] = meta.get("refinement_log", [])
+    all_corrections: list[dict] = meta.get("all_corrections", [])
+
+    if not track_record and not all_corrections:
+        return None
+
+    corrections_path = output_path.with_suffix(".corrections.md")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    model = meta.get("model", "unknown")
+    final_verdict = meta.get("final_verdict", "N/A")
+    iters = meta.get("iterations_completed", 0)
+
+    lines: list[str] = [
+        f"# Refinement Corrections — {result.source.name}",
+        "",
+        f"- **Generated**: {now}",
+        f"- **Model**: {model}",
+        f"- **Iterations completed**: {iters}",
+        f"- **Final verdict**: {final_verdict}",
+        "",
+        "---",
+        "",
+        "## Track Record",
+        "",
+        "| Iteration | Errors | Critical | Moderate | Minor | Verdict |",
+        "|-----------|--------|----------|----------|-------|---------|",
+    ]
+    for row in track_record:
+        verdict_icon = "✅" if row["verdict"] == "CLEAN" else "⚠️"
+        lines.append(
+            f"| {row['iteration']} | {row['errors_found']} | "
+            f"{row['critical']} | {row['moderate']} | {row['minor']} | "
+            f"{verdict_icon} {row['verdict']} |"
+        )
+
+    if all_corrections:
+        lines += ["", "---", "", "## Detailed Corrections", ""]
+        # Group by iteration
+        by_iter: dict[int, list[dict]] = {}
+        for c in all_corrections:
+            it = int(c.get("iteration", 0))
+            by_iter.setdefault(it, []).append(c)
+
+        # If no iteration key on corrections, show them flat
+        if all(k == 0 for k in by_iter):
+            for j, c in enumerate(all_corrections, 1):
+                lines += _format_correction(j, c)
+        else:
+            for it in sorted(by_iter):
+                lines.append(f"### Iteration {it}")
+                lines.append("")
+                for j, c in enumerate(by_iter[it], 1):
+                    lines += _format_correction(j, c)
+    else:
+        lines += ["", "*No individual correction details were recorded.*"]
+
+    corrections_path.write_text("\n".join(lines), encoding="utf-8")
+    return corrections_path
+
+
+def _format_correction(index: int, c: dict) -> list[str]:
+    severity = c.get("severity", "unknown").upper()
+    category = c.get("category", "unknown")
+    return [
+        f"#### Error {index} — {severity} · {category}",
+        "",
+        f"- **Location**: {c.get('location', 'N/A')}",
+        f"- **PDF says**: `{c.get('pdf_says', 'N/A')}`",
+        f"- **Markdown had**: `{c.get('markdown_had', 'N/A')}`",
+        f"- **Corrected to**: `{c.get('corrected_to', 'N/A')}`",
+        f"- **Risk**: {c.get('risk', 'N/A')}",
+        "",
+    ]
 
 
 # ── Tab UI ─────────────────────────────────────────────────────────────────────
@@ -246,39 +359,33 @@ def run() -> None:
     st.subheader("⚙️ Options")
 
     available_backends = list_available()
-    backend_options = ["auto"] + available_backends
+    # Vertexai always first (default); no "auto" mode
+    if "vertexai" in available_backends:
+        backend_options = ["vertexai"] + [b for b in available_backends if b != "vertexai"]
+    else:
+        backend_options = available_backends
+
     backend_labels: dict[str, str] = {
-        "auto": "Auto — classify and pick best",
         "pdfplumber": "pdfplumber  (born-digital, fast)",
         "marker": "marker  (high accuracy, GPU optional)",
-        "docling": "docling  (IBM Docling, structured)",
         "vertexai": "vertexai  (Gemini on Vertex AI, cloud)",
     }
 
-    col_backend, col_validate, col_verbose = st.columns([3, 1, 1])
+    col_backend, col_verbose = st.columns([4, 1])
 
     with col_backend:
         backend_choice: str = st.selectbox(  # type: ignore[assignment]
             "Backend",
             backend_options,
+            index=0,
             format_func=lambda x: backend_labels.get(x, x),
-            help="Select the extraction engine. 'Auto' classifies the PDF and selects the best installed backend.",
+            help="Select the extraction engine.",
             key="backend_select",
             disabled=running,
         )
 
-    with col_validate:
-        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)  # align with selectbox
-        validate_output: bool = st.checkbox(
-            "Validate",
-            value=True,
-            help="Run quality validation after conversion (character similarity, headings, tables).",
-            key="validate_check",
-            disabled=running,
-        )
-
     with col_verbose:
-        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)  # align with selectbox
+        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)
         verbose: bool = st.checkbox(
             "Verbose",
             help="Show DEBUG-level log messages.",
@@ -321,13 +428,32 @@ def run() -> None:
                 disabled=running,
             )
 
+        _cache_info = vertexai_pricing.get_cache_info()
+        _cache_status = (
+            f"Cached {_cache_info['fetched_at']} · {_cache_info['num_models']} models"
+            if _cache_info["cached"]
+            else f"Built-in fallback · {_cache_info['num_models']} models"
+        )
+        _upd_col, _status_col = st.columns([1, 4])
+        with _upd_col:
+            if st.button("🔄 Update cost table", key="update_pricing_btn", disabled=running):
+                with st.spinner("Fetching Vertex AI pricing…"):
+                    try:
+                        vertexai_pricing.fetch_and_cache()
+                        st.success("Pricing table updated.")
+                    except Exception as _e:
+                        st.error(f"Fetch failed: {_e}")
+                st.rerun()
+        with _status_col:
+            st.caption(_cache_status)
+
         vai_col4, vai_col5, vai_col6 = st.columns([2, 2, 2])
 
         with vai_col4:
             st.slider(
                 "Iterative refinement passes (0 = extraction only)",
                 min_value=0,
-                max_value=5,
+                max_value=10,
                 value=0,
                 key="vai_refine_iterations",
                 disabled=running,
@@ -352,94 +478,97 @@ def run() -> None:
                     disabled=running,
                 )
 
+        if st.session_state.get("vai_refine_iterations", 0) > 0:
+            vai_col7, vai_col8, _ = st.columns([2, 2, 2])
+            with vai_col7:
+                _cfg_cse = _load_config_default("vertexai", "clean_stop_max_errors", 0)
+                st.number_input(
+                    "Max errors to accept as CLEAN",
+                    min_value=-1,
+                    value=int(_cfg_cse),
+                    step=1,
+                    help=(
+                        "Early-stop threshold when the model returns a CLEAN verdict. "
+                        "Stop only if errors found ≤ this value. "
+                        "Set to **-1** to stop on any CLEAN verdict (original behaviour). "
+                        "Default (0): only stop when no errors remain."
+                    ),
+                    key="vai_clean_stop_max_errors",
+                    disabled=running,
+                )
+
     if pdf_path is not None and not running:
         st.caption(f"Output will be saved to: `{pdf_path.with_suffix('.md')}`")
 
     st.divider()
 
-    # ── 3. Execute / Clear / Cancel buttons ─────────────────────────────────
-    # NOTE: we intentionally do NOT call st.rerun() inside Execute/Cancel handlers.
-    # Letting the script continue to steps 4-7 ensures the log/result sections
-    # are reached with the freshly-cleared state, so they render nothing and
-    # the old output disappears immediately without a flash.
+    # ── 3. Execute / Clean buttons ─────────────────────────────────────────────
     if not running:
-        col_execute, col_clear = st.columns([1, 1])
-        with col_execute:
+        _btn_col, _clean_col = st.columns([5, 1])
+
+        with _clean_col:
             if st.button(
-                "⚡  Execute",
-                type="primary",
-                disabled=(pdf_path is None),
+                "🧹 Clean",
                 use_container_width=True,
-                key="execute_btn",
-            ):
-                if pdf_path is None:
-                    st.warning("Please select a valid PDF file first.")
-                    st.stop()
-
-                # Step 1: clear all content below (log + result)
-                _clear_output()
-
-                selected_backend: str | None = (
-                    None if backend_choice == "auto" else backend_choice
-                )
-
-                # Collect backend-specific kwargs
-                extra_kwargs: dict = {}
-                if backend_choice == "vertexai":
-                    extra_kwargs = {
-                        "project_id": st.session_state.get("vai_project_id", ""),
-                        "location": st.session_state.get("vai_location", "europe-west3"),
-                        "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
-                        "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
-                        "extraction_prompt_file": st.session_state.get(
-                            "vai_extraction_prompt_file", "prompts/extraction.md"
-                        ),
-                        "refinement_prompt_file": st.session_state.get(
-                            "vai_refinement_prompt_file", "prompts/refinement.md"
-                        ),
-                    }
-
-                log_q: queue.Queue = queue.Queue()
-                result_q: queue.Queue = queue.Queue()
-
-                thread = threading.Thread(
-                    target=_run_conversion,
-                    args=(pdf_path, selected_backend, validate_output, verbose, result_q, log_q),
-                    kwargs={"backend_kwargs": extra_kwargs},
-                    daemon=True,
-                )
-                thread.start()
-
-                # Step 2: run conversion (state for polling)
-                st.session_state.ex_running = True
-                st.session_state.ex_log_q = log_q
-                st.session_state.ex_result_q = result_q
-                st.session_state.ex_output_path = pdf_path.with_suffix(".md")
-                # No st.rerun() — script continues; sections 5/7 see empty state
-
-        with col_clear:
-            if st.button(
-                "🗑️  Clear",
-                type="secondary",
-                use_container_width=True,
-                key="clear_btn",
-                help="Clear the execution log and result; removes all content below.",
+                key="clean_btn",
+                help="Clear the execution log and result.",
             ):
                 _clear_output()
                 st.rerun()
 
-    else:
-        if st.button(
-            "⛔  Cancel",
-            type="secondary",
+        _execute_clicked = _btn_col.button(
+            "⚡  Execute",
+            type="primary",
+            disabled=(pdf_path is None),
             use_container_width=True,
-            key="cancel_btn",
-        ):
-            st.session_state.ex_running = False
-            st.session_state.ex_logs.append(
-                "— Cancelled by user. The backend may still be running in the background. —"
+            key="execute_btn",
+        )
+
+        if _execute_clicked:
+            if pdf_path is None:
+                st.warning("Please select a valid PDF file first.")
+                st.stop()
+
+            _clear_output()
+
+            selected_backend: str = backend_choice
+
+            extra_kwargs: dict = {}
+            if backend_choice == "vertexai":
+                extra_kwargs = {
+                    "project_id": st.session_state.get("vai_project_id", ""),
+                    "location": st.session_state.get("vai_location", "europe-west3"),
+                    "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
+                    "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
+                    "clean_stop_max_errors": st.session_state.get(
+                        "vai_clean_stop_max_errors",
+                        _load_config_default("vertexai", "clean_stop_max_errors", 0),
+                    ),
+                    "extraction_prompt_file": st.session_state.get(
+                        "vai_extraction_prompt_file", "prompts/extraction.md"
+                    ),
+                    "refinement_prompt_file": st.session_state.get(
+                        "vai_refinement_prompt_file", "prompts/refinement.md"
+                    ),
+                }
+
+            log_q: queue.Queue = queue.Queue()
+            result_q: queue.Queue = queue.Queue()
+
+            thread = threading.Thread(
+                target=_run_conversion,
+                args=(pdf_path, selected_backend, verbose, result_q, log_q),
+                kwargs={"backend_kwargs": extra_kwargs},
+                daemon=True,
             )
-            # No st.rerun() — script continues to render the final log state
+            thread.start()
+
+            st.session_state.ex_running = True
+            st.session_state.ex_log_q = log_q
+            st.session_state.ex_result_q = result_q
+            st.session_state.ex_output_path = pdf_path.with_suffix(".md")
+            st.session_state.ex_verbose = verbose
+            st.rerun()
 
     # ── 4. Poll log queue (uses current session state, not stale `running`) ─
     if st.session_state.ex_running:
@@ -465,8 +594,8 @@ def run() -> None:
             # with running=False; otherwise they stay disabled/stuck on Cancel.
             st.rerun()
 
-    # ── 5. Render logs (single container to avoid "two boxes" flash) ─────────
-    if st.session_state.ex_running or st.session_state.ex_logs:
+    # ── 5. Render logs (only when there is content to avoid empty-box flash) ─
+    if st.session_state.ex_logs:
         import html as _html
 
         log_html = _html.escape("\n".join(st.session_state.ex_logs))
@@ -501,103 +630,112 @@ def run() -> None:
                 unsafe_allow_html=True,
             )
 
-    # ── 6. Keep polling while still running ────────────────────────────────
+    # ── 6. Show result — rendered BEFORE the sleep so Streamlit flushes the
+    #        "remove old result" delta to the browser immediately on new runs. ─
+    result_payload = st.session_state.ex_result
+    if result_payload is not None and not st.session_state.ex_running:
+        status, payload = result_payload
+        output_path: Path = st.session_state.ex_output_path
+
+        st.divider()
+
+        if status == "error":
+            st.error(f"Conversion failed:\n\n```\n{payload}\n```")
+        else:
+            result = payload
+
+            result.save(output_path)
+
+            _step_paths: list[Path] = []
+            if st.session_state.get("ex_verbose", False) and result.backend_used == "vertexai":
+                _iter_markdowns: list[str] = result.metadata.get("iteration_markdowns", [])
+                for _idx, _iter_md in enumerate(_iter_markdowns, 1):
+                    _step_path = output_path.with_name(
+                        f"{output_path.stem}.step_{_idx:02d}.md"
+                    )
+                    _step_path.write_text(_iter_md, encoding="utf-8")
+                    _step_paths.append(_step_path)
+
+            corrections_path: Path | None = None
+            if result.backend_used == "vertexai":
+                corrections_path = _save_corrections_report(result, output_path)
+
+            st.subheader("✅ Result")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Backend", result.backend_used)
+            m2.metric("Pages", result.page_count if result.page_count is not None else "—")
+            m3.metric("Characters", f"{len(result.markdown):,}")
+            m4.metric("Tokens (est.)", f"~{result.token_estimate:,}")
+
+            st.success(f"Saved → `{output_path}`")
+            if _step_paths:
+                _step_names = ", ".join(f"`{p.name}`" for p in _step_paths)
+                st.info(f"Intermediate steps saved ({len(_step_paths)}): {_step_names}")
+            if corrections_path is not None:
+                st.success(f"Corrections log → `{corrections_path}`")
+
+            if result.backend_used == "vertexai":
+                meta = result.metadata
+                total_in = meta.get("total_input_tokens", 0)
+                total_out = meta.get("total_output_tokens", 0)
+                total_tok = meta.get("total_tokens", 0)
+                model_used: str = meta.get("model", "gemini-2.5-pro")
+                iters_done: int = meta.get("iterations_completed", 0)
+                final_verdict: str = meta.get("final_verdict", "N/A")
+
+                _pricing_data = vertexai_pricing.load_pricing()
+                cost_label, _cost_found = vertexai_pricing.calculate_cost(
+                    model_used, total_in, total_out, _pricing_data
+                )
+
+                st.markdown("#### ☁️ Vertex AI Usage")
+                vc_model, vc1, vc2, vc3, vc4 = st.columns([4, 2, 2, 2, 2])
+                vc_model.metric("Model", model_used)
+                vc1.metric("Input tokens", f"{total_in:,}")
+                vc2.metric("Output tokens", f"{total_out:,}")
+                vc3.metric("Total tokens", f"{total_tok:,}")
+                vc4.metric("Est. cost", cost_label)
+
+                refinement_log: list[dict] = meta.get("refinement_log", [])
+                if refinement_log:
+                    st.markdown("#### 🔄 Refinement Track Record")
+                    st.info(
+                        f"**{iters_done}** refinement pass(es) completed — "
+                        f"final verdict: **{final_verdict}**"
+                    )
+                    rows_md = (
+                        "| Iteration | Errors | Critical | Moderate | Minor | Verdict |\n"
+                        "|-----------|--------|----------|----------|-------|---------|"
+                    )
+                    for row in refinement_log:
+                        verdict_icon = "✅" if row["verdict"] == "CLEAN" else ("⚠️" if row["verdict"] == "NEEDS ANOTHER PASS" else "❓")
+                        rows_md += (
+                            f"\n| {row['iteration']} | {row['errors_found']} | "
+                            f"{row['critical']} | {row['moderate']} | {row['minor']} | "
+                            f"{verdict_icon} {row['verdict']} |"
+                        )
+                    st.markdown(rows_md)
+                else:
+                    st.info("Extraction only — no refinement passes were run.")
+
+            with st.expander("📄 Markdown preview", expanded=True):
+                preview = result.markdown[:6000]
+                if len(result.markdown) > 6000:
+                    preview += "\n\n*… (truncated — open the file for full content)*"
+                st.markdown(preview)
+
+            with st.expander("📋 Raw Markdown (copy-ready)"):
+                st.code(result.markdown, language="markdown")
+
+            if corrections_path is not None and corrections_path.exists():
+                _corrections_text = corrections_path.read_text(encoding="utf-8")
+                with st.expander("🔍 Corrections Preview"):
+                    st.markdown(_corrections_text)
+                with st.expander("📋 Corrections Raw (copy-ready)"):
+                    st.code(_corrections_text, language="markdown")
+
+    # ── 7. Keep polling while still running ────────────────────────────────
     if st.session_state.ex_running:
         time.sleep(1)
         st.rerun()
-        return
-
-    # ── 7. Show result once finished ───────────────────────────────────────
-    result_payload = st.session_state.ex_result
-    if result_payload is None:
-        return
-
-    status, payload = result_payload
-    output_path: Path = st.session_state.ex_output_path
-
-    st.divider()
-
-    if status == "error":
-        st.error(f"Conversion failed:\n\n```\n{payload}\n```")
-        return
-
-    result = payload
-
-    # Save alongside source
-    result.save(output_path)
-
-    st.subheader("✅ Result")
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Backend", result.backend_used)
-    m2.metric("Pages", result.page_count if result.page_count is not None else "—")
-    m3.metric("Characters", f"{len(result.markdown):,}")
-    m4.metric("Tokens (est.)", f"~{result.token_estimate:,}")
-
-    if result.validation:
-        v = result.validation
-        v_label = "PASS ✅" if v.passed else "FAIL ❌"
-        st.info(
-            f"Validation: **{v_label}** — "
-            f"similarity **{v.char_similarity:.1%}** — "
-            f"**{len(v.warnings)}** warning(s)"
-        )
-        if v.warnings:
-            with st.expander("Validation warnings"):
-                for w in v.warnings:
-                    st.write(f"- {w}")
-
-    st.success(f"Saved → `{output_path}`")
-
-    # ── VertexAI-specific result details ───────────────────────────────────
-    if result.backend_used == "vertexai":
-        meta = result.metadata
-        total_in = meta.get("total_input_tokens", 0)
-        total_out = meta.get("total_output_tokens", 0)
-        total_tok = meta.get("total_tokens", 0)
-        model_used: str = meta.get("model", "gemini-2.5-pro")
-        iters_done: int = meta.get("iterations_completed", 0)
-        final_verdict: str = meta.get("final_verdict", "N/A")
-
-        pricing = _GEMINI_PRICING.get(model_used, {"input": 0.0, "output": 0.0})
-        cost_usd = (total_in / 1_000_000) * pricing["input"] + (total_out / 1_000_000) * pricing["output"]
-        cost_label = f"${cost_usd:.4f}" if pricing["input"] > 0 else "preview"
-
-        st.markdown("#### ☁️ Vertex AI Usage")
-        vc1, vc2, vc3, vc4, vc5 = st.columns(5)
-        vc1.metric("Model", model_used)
-        vc2.metric("Input tokens", f"{total_in:,}")
-        vc3.metric("Output tokens", f"{total_out:,}")
-        vc4.metric("Total tokens", f"{total_tok:,}")
-        vc5.metric("Est. cost", cost_label)
-
-        refinement_log: list[dict] = meta.get("refinement_log", [])
-        if refinement_log:
-            st.markdown("#### 🔄 Refinement Track Record")
-            st.info(
-                f"**{iters_done}** refinement pass(es) completed — "
-                f"final verdict: **{final_verdict}**"
-            )
-            rows_md = (
-                "| Iteration | Errors | Critical | Moderate | Minor | Verdict |\n"
-                "|-----------|--------|----------|----------|-------|---------|"
-            )
-            for row in refinement_log:
-                verdict_icon = "✅" if row["verdict"] == "CLEAN" else ("⚠️" if row["verdict"] == "NEEDS ANOTHER PASS" else "❓")
-                rows_md += (
-                    f"\n| {row['iteration']} | {row['errors_found']} | "
-                    f"{row['critical']} | {row['moderate']} | {row['minor']} | "
-                    f"{verdict_icon} {row['verdict']} |"
-                )
-            st.markdown(rows_md)
-        else:
-            st.info("Extraction only — no refinement passes were run.")
-
-    with st.expander("📄 Markdown preview", expanded=True):
-        preview = result.markdown[:6000]
-        if len(result.markdown) > 6000:
-            preview += "\n\n*… (truncated — open the file for full content)*"
-        st.markdown(preview)
-
-    with st.expander("📋 Raw Markdown (copy-ready)"):
-        st.code(result.markdown, language="markdown")
