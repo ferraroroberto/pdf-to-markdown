@@ -141,13 +141,77 @@ result.save("output/document.md")
 
 ## Backends
 
-| Backend    | Type        | Scanned PDFs | Notes                    |
-|------------|-------------|--------------|--------------------------|
-| Marker     | ML-powered  | Yes (OCR)    | Install `marker-pdf`     |
-| Docling    | ML-powered  | Yes (OCR)    | Install `docling`        |
-| pdfplumber | Heuristic   | No           | Included in requirements |
+| Backend    | Type        | Scanned PDFs | Notes                         |
+|------------|-------------|--------------|-------------------------------|
+| Marker     | ML-powered  | Yes (OCR)    | Install `marker-pdf`          |
+| Docling    | ML-powered  | Yes (OCR)    | Install `docling`             |
+| Vertex AI  | Cloud LLM   | Yes          | Install `google-genai`        |
+| pdfplumber | Heuristic   | No           | Included in requirements      |
 
 The pipeline picks the best available backend automatically.
+
+### Vertex AI Backend (Gemini)
+
+The `vertexai` backend uses Google Gemini via the Vertex AI API for high-fidelity PDF extraction. It natively handles both born-digital and scanned PDFs and supports optional iterative self-refinement for maximum accuracy.
+
+#### Prerequisites
+
+1. A Google Cloud project with the **Vertex AI API** enabled.
+2. The `google-genai` package: `pip install google-genai>=1.0.0`
+3. Authentication:
+   ```bash
+   gcloud auth application-default login
+   # or set GOOGLE_APPLICATION_CREDENTIALS to your service account key path
+   ```
+
+#### Configuration
+
+Set via environment variables or the Streamlit UI:
+
+| Variable      | Default          | Description                              |
+|---------------|------------------|------------------------------------------|
+| `PROJECT_ID`  | *(required)*     | Your Google Cloud project ID             |
+| `LOCATION`    | `europe-west3`   | Vertex AI region (e.g. `us-central1`)    |
+| `MODEL_ID`    | `gemini-2.5-pro` | Gemini model string                      |
+
+```bash
+# Example .env or shell exports
+export PROJECT_ID=my-gcp-project
+export LOCATION=europe-west3
+export MODEL_ID=gemini-2.5-pro
+```
+
+#### Iterative Refinement
+
+Set `--refine-iterations N` (CLI) or the slider in the UI to run N additional self-correction passes after the initial extraction. Each pass sends the PDF and the current Markdown back to Gemini and asks it to audit and fix errors, returning a structured JSON correction report. Refinement stops early when the document is declared `CLEAN` or when two consecutive passes show no improvement.
+
+Use refinement when:
+- The PDF contains complex tables or dense numerical data
+- High-fidelity extraction is critical (e.g. financial reports, regulatory documents)
+- A single extraction pass leaves visible errors
+
+Typical recommendation: 1–2 passes for most documents; 3–5 passes for complex multi-table documents.
+
+#### CLI usage
+
+```bash
+# Extraction only
+python pipeline.py convert document.pdf -b vertexai
+
+# With 3 refinement passes
+python pipeline.py convert document.pdf -b vertexai --refine-iterations 3
+
+# Override project/model
+PROJECT_ID=my-project MODEL_ID=gemini-2.5-flash python pipeline.py convert doc.pdf -b vertexai
+```
+
+#### Prompt files
+
+The backend reads prompt templates from:
+- `prompts/extraction.md` — extraction instructions sent with the PDF
+- `prompts/refinement.md` — quality criteria used during refinement passes
+
+Override the paths via the UI or by passing `extraction_prompt_file` / `refinement_prompt_file` kwargs.
 
 ## Tests
 

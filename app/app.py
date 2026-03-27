@@ -6,6 +6,13 @@ from pathlib import Path
 
 import streamlit as st
 
+# Load .env from project root if present (populates PROJECT_ID, GOOGLE_API_KEY, etc.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env", override=False)
+except ImportError:
+    pass
+
 # Suppress "missing ScriptRunContext" warnings when the main thread is in a nested
 # event loop (e.g. tkinter file dialog). Streamlit says these can be ignored in bare mode.
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(
@@ -36,16 +43,28 @@ st.markdown(
 )
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.backends import list_available  # noqa: E402
+
 st.sidebar.title("📄 PDF → Markdown")
 st.sidebar.markdown("Convert PDF documents to clean Markdown for LLMs and other tools.")
 st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "**Available backends**\n"
-    "- `pdfplumber` — born-digital PDFs, fast\n"
-    "- `marker` — high accuracy, GPU optional\n"
-    "- `docling` — IBM Docling, structured output\n"
-    "- **Auto** — classifies PDF and picks best"
-)
+
+_BACKEND_DESCRIPTIONS: dict[str, str] = {
+    "pdfplumber": "born-digital PDFs, fast",
+    "marker":     "high accuracy, GPU optional",
+    "docling":    "IBM Docling, structured",
+    "vertexai":   "Gemini on Vertex AI, cloud ☁️",
+}
+
+_installed = list_available()
+_lines = ["**Available backends**", ""]
+for _b, _desc in _BACKEND_DESCRIPTIONS.items():
+    _tick = "✅" if _b in _installed else "○"
+    _lines.append(f"{_tick} `{_b}` — {_desc}\n")
+_lines.append("— **Auto** — classifies PDF, picks best\n")
+st.sidebar.markdown("\n".join(_lines))
+
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Project root: `{Path(__file__).parent.parent}`")
 
