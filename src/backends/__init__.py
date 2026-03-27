@@ -6,10 +6,12 @@ from src.backends.base import BaseBackend
 from src.backends.docling_backend import DoclingBackend
 from src.backends.marker_backend import MarkerBackend
 from src.backends.pdfplumber_backend import PdfplumberBackend
+from src.backends.vertexai_backend import VertexAIBackend
 
 BACKEND_REGISTRY: list[type[BaseBackend]] = [
     MarkerBackend,
     DoclingBackend,
+    VertexAIBackend,
     PdfplumberBackend,
 ]
 

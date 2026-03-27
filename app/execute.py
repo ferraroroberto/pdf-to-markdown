@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import queue
 import sys
 import time
@@ -18,6 +19,20 @@ import streamlit as st
 from src.backends import list_available
 from src.classifier import classify_pdf
 from src.pipeline import Pipeline
+
+# Gemini model options shown in the UI (order = dropdown order)
+_VAI_MODELS: list[str] = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite-preview",
+]
+
+# Approximate pricing per million tokens (USD); preview models billed at Flash-Lite rates
+_GEMINI_PRICING: dict[str, dict[str, float]] = {
+    "gemini-2.5-pro":                {"input": 1.25,  "output": 10.0},
+    "gemini-2.5-flash":              {"input": 0.075, "output": 0.30},
+    "gemini-3.1-flash-lite-preview": {"input": 0.0,   "output": 0.0},  # preview — no public price yet
+}
 
 
 # ── Stream tee (captures tqdm / print output) ──────────────────────────────────
@@ -97,6 +112,7 @@ def _run_conversion(
     verbose: bool,
     result_queue: queue.Queue,
     log_queue: queue.Queue,
+    backend_kwargs: dict | None = None,
 ) -> None:
     """Runs in a background thread; streams log lines and pushes final result.
 
@@ -117,7 +133,7 @@ def _run_conversion(
 
     try:
         pipe = Pipeline(backend=backend)
-        result = pipe.convert(pdf_path, validate_output=validate)
+        result = pipe.convert(pdf_path, validate_output=validate, **(backend_kwargs or {}))
         result_queue.put(("ok", result))
     except Exception as exc:  # noqa: BLE001
         result_queue.put(("error", str(exc)))
@@ -236,6 +252,7 @@ def run() -> None:
         "pdfplumber": "pdfplumber  (born-digital, fast)",
         "marker": "marker  (high accuracy, GPU optional)",
         "docling": "docling  (IBM Docling, structured)",
+        "vertexai": "vertexai  (Gemini on Vertex AI, cloud)",
     }
 
     col_backend, col_validate, col_verbose = st.columns([3, 1, 1])
@@ -269,6 +286,72 @@ def run() -> None:
             disabled=running,
         )
 
+    # ── VertexAI-specific options ──────────────────────────────────────────
+    if backend_choice == "vertexai":
+        st.markdown("##### ☁️ Vertex AI Configuration")
+        vai_col1, vai_col2, vai_col3 = st.columns([2, 2, 2])
+
+        with vai_col1:
+            st.text_input(
+                "Project ID",
+                value=os.getenv("PROJECT_ID", ""),
+                help="Your Google Cloud project ID.",
+                key="vai_project_id",
+                disabled=running,
+            )
+
+        with vai_col2:
+            st.text_input(
+                "Location",
+                value=os.getenv("LOCATION", "europe-west3"),
+                help="Vertex AI region, e.g. europe-west3.",
+                key="vai_location",
+                disabled=running,
+            )
+
+        with vai_col3:
+            _env_model = os.getenv("MODEL_ID", "gemini-2.5-pro")
+            _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
+            st.selectbox(
+                "Model",
+                _VAI_MODELS,
+                index=_model_idx,
+                help="Gemini model to use for extraction.",
+                key="vai_model_id",
+                disabled=running,
+            )
+
+        vai_col4, vai_col5, vai_col6 = st.columns([2, 2, 2])
+
+        with vai_col4:
+            st.slider(
+                "Iterative refinement passes (0 = extraction only)",
+                min_value=0,
+                max_value=5,
+                value=0,
+                key="vai_refine_iterations",
+                disabled=running,
+            )
+
+        with vai_col5:
+            st.text_input(
+                "Extraction prompt file",
+                value="prompts/extraction.md",
+                help="Path to the extraction prompt (relative to project root).",
+                key="vai_extraction_prompt_file",
+                disabled=running,
+            )
+
+        with vai_col6:
+            if st.session_state.get("vai_refine_iterations", 0) > 0:
+                st.text_input(
+                    "Refinement prompt file",
+                    value="prompts/refinement.md",
+                    help="Path to the refinement prompt (relative to project root).",
+                    key="vai_refinement_prompt_file",
+                    disabled=running,
+                )
+
     if pdf_path is not None and not running:
         st.caption(f"Output will be saved to: `{pdf_path.with_suffix('.md')}`")
 
@@ -300,12 +383,29 @@ def run() -> None:
                     None if backend_choice == "auto" else backend_choice
                 )
 
+                # Collect backend-specific kwargs
+                extra_kwargs: dict = {}
+                if backend_choice == "vertexai":
+                    extra_kwargs = {
+                        "project_id": st.session_state.get("vai_project_id", ""),
+                        "location": st.session_state.get("vai_location", "europe-west3"),
+                        "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
+                        "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
+                        "extraction_prompt_file": st.session_state.get(
+                            "vai_extraction_prompt_file", "prompts/extraction.md"
+                        ),
+                        "refinement_prompt_file": st.session_state.get(
+                            "vai_refinement_prompt_file", "prompts/refinement.md"
+                        ),
+                    }
+
                 log_q: queue.Queue = queue.Queue()
                 result_q: queue.Queue = queue.Queue()
 
                 thread = threading.Thread(
                     target=_run_conversion,
                     args=(pdf_path, selected_backend, validate_output, verbose, result_q, log_q),
+                    kwargs={"backend_kwargs": extra_kwargs},
                     daemon=True,
                 )
                 thread.start()
@@ -448,6 +548,50 @@ def run() -> None:
                     st.write(f"- {w}")
 
     st.success(f"Saved → `{output_path}`")
+
+    # ── VertexAI-specific result details ───────────────────────────────────
+    if result.backend_used == "vertexai":
+        meta = result.metadata
+        total_in = meta.get("total_input_tokens", 0)
+        total_out = meta.get("total_output_tokens", 0)
+        total_tok = meta.get("total_tokens", 0)
+        model_used: str = meta.get("model", "gemini-2.5-pro")
+        iters_done: int = meta.get("iterations_completed", 0)
+        final_verdict: str = meta.get("final_verdict", "N/A")
+
+        pricing = _GEMINI_PRICING.get(model_used, {"input": 0.0, "output": 0.0})
+        cost_usd = (total_in / 1_000_000) * pricing["input"] + (total_out / 1_000_000) * pricing["output"]
+        cost_label = f"${cost_usd:.4f}" if pricing["input"] > 0 else "preview"
+
+        st.markdown("#### ☁️ Vertex AI Usage")
+        vc1, vc2, vc3, vc4, vc5 = st.columns(5)
+        vc1.metric("Model", model_used)
+        vc2.metric("Input tokens", f"{total_in:,}")
+        vc3.metric("Output tokens", f"{total_out:,}")
+        vc4.metric("Total tokens", f"{total_tok:,}")
+        vc5.metric("Est. cost", cost_label)
+
+        refinement_log: list[dict] = meta.get("refinement_log", [])
+        if refinement_log:
+            st.markdown("#### 🔄 Refinement Track Record")
+            st.info(
+                f"**{iters_done}** refinement pass(es) completed — "
+                f"final verdict: **{final_verdict}**"
+            )
+            rows_md = (
+                "| Iteration | Errors | Critical | Moderate | Minor | Verdict |\n"
+                "|-----------|--------|----------|----------|-------|---------|"
+            )
+            for row in refinement_log:
+                verdict_icon = "✅" if row["verdict"] == "CLEAN" else ("⚠️" if row["verdict"] == "NEEDS ANOTHER PASS" else "❓")
+                rows_md += (
+                    f"\n| {row['iteration']} | {row['errors_found']} | "
+                    f"{row['critical']} | {row['moderate']} | {row['minor']} | "
+                    f"{verdict_icon} {row['verdict']} |"
+                )
+            st.markdown(rows_md)
+        else:
+            st.info("Extraction only — no refinement passes were run.")
 
     with st.expander("📄 Markdown preview", expanded=True):
         preview = result.markdown[:6000]
