@@ -1,0 +1,5 @@
+{
+  "vertexai": {
+    "clean_stop_max_errors": 0
+  }
+}

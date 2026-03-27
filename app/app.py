@@ -53,7 +53,6 @@ st.sidebar.markdown("---")
 _BACKEND_DESCRIPTIONS: dict[str, str] = {
     "pdfplumber": "born-digital PDFs, fast",
     "marker":     "high accuracy, GPU optional",
-    "docling":    "IBM Docling, structured",
     "vertexai":   "Gemini on Vertex AI, cloud ☁️",
 }
 
@@ -62,7 +61,6 @@ _lines = ["**Available backends**", ""]
 for _b, _desc in _BACKEND_DESCRIPTIONS.items():
     _tick = "✅" if _b in _installed else "○"
     _lines.append(f"{_tick} `{_b}` — {_desc}\n")
-_lines.append("— **Auto** — classifies PDF, picks best\n")
 st.sidebar.markdown("\n".join(_lines))
 
 st.sidebar.markdown("---")
