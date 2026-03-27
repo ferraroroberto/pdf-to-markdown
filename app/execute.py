@@ -27,7 +27,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 
 def _load_config_default(section: str, key: str, default: object) -> object:
     """Read a value from config.json; return *default* if not found."""
-    config_path = _PROJECT_ROOT / "config.json"
+    config_path = _PROJECT_ROOT / "src" / "config.json"
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -243,22 +243,17 @@ def _save_corrections_report(result, output_path: Path) -> Path | None:
 
     if all_corrections:
         lines += ["", "---", "", "## Detailed Corrections", ""]
-        # Group by iteration
-        by_iter: dict[int, list[dict]] = {}
-        for c in all_corrections:
-            it = int(c.get("iteration", 0))
-            by_iter.setdefault(it, []).append(c)
-
-        # If no iteration key on corrections, show them flat
-        if all(k == 0 for k in by_iter):
+        has_steps = not all(int(c.get("iteration", 0)) == 0 for c in all_corrections)
+        if has_steps:
+            # Sort by step (iteration) so errors appear in the order they were found
+            sorted_corrections = sorted(
+                all_corrections, key=lambda c: int(c.get("iteration", 0))
+            )
+            for j, c in enumerate(sorted_corrections, 1):
+                lines += _format_correction(j, c, found_step=int(c.get("iteration", 0)))
+        else:
             for j, c in enumerate(all_corrections, 1):
                 lines += _format_correction(j, c)
-        else:
-            for it in sorted(by_iter):
-                lines.append(f"### Iteration {it}")
-                lines.append("")
-                for j, c in enumerate(by_iter[it], 1):
-                    lines += _format_correction(j, c)
     else:
         lines += ["", "*No individual correction details were recorded.*"]
 
@@ -266,19 +261,31 @@ def _save_corrections_report(result, output_path: Path) -> Path | None:
     return corrections_path
 
 
-def _format_correction(index: int, c: dict) -> list[str]:
+def _format_correction(index: int, c: dict, found_step: int | None = None) -> list[str]:
     severity = c.get("severity", "unknown").upper()
     category = c.get("category", "unknown")
-    return [
+    result = [
         f"#### Error {index} — {severity} · {category}",
         "",
+    ]
+    if found_step is not None:
+        result.append(f"- **Found in step**: {found_step:02d}")
+    result += [
         f"- **Location**: {c.get('location', 'N/A')}",
         f"- **PDF says**: `{c.get('pdf_says', 'N/A')}`",
         f"- **Markdown had**: `{c.get('markdown_had', 'N/A')}`",
-        f"- **Corrected to**: `{c.get('corrected_to', 'N/A')}`",
+    ]
+    if found_step is not None:
+        result.append(
+            f"- **Corrected in step {found_step + 1:02d} to**: `{c.get('corrected_to', 'N/A')}`"
+        )
+    else:
+        result.append(f"- **Corrected to**: `{c.get('corrected_to', 'N/A')}`")
+    result += [
         f"- **Risk**: {c.get('risk', 'N/A')}",
         "",
     ]
+    return result
 
 
 # ── Tab UI ─────────────────────────────────────────────────────────────────────
@@ -598,7 +605,7 @@ def run() -> None:
     if st.session_state.ex_logs:
         import html as _html
 
-        log_html = _html.escape("\n".join(st.session_state.ex_logs))
+        log_html = _html.escape("\n".join(reversed(st.session_state.ex_logs)))
         # Single markdown block: title + log div in one element so Streamlit
         # doesn't render two separate blocks (subheader + div) that can appear
         # as two boxes and then collapse to one on rerun.

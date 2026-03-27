@@ -31,7 +31,7 @@ _HEX_CHARS: frozenset[str] = frozenset('0123456789abcdefABCDEF')
 
 def _load_config_clean_stop_max_errors() -> int | None:
     """Read clean_stop_max_errors from config.json, or return None if not set."""
-    config_path = _project_root() / "config.json"
+    config_path = _project_root() / "src" / "config.json"
     if config_path.exists():
         try:
             data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -455,6 +455,8 @@ class VertexAIBackend(BaseBackend):
                 f"{step_in:,}", f"{step_out:,}",
             )
 
+            for _c in corrections:
+                _c["iteration"] = i
             all_corrections.extend(corrections)
             track_row = {
                 "iteration": i,
