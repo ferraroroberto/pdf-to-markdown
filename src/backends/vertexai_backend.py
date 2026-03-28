@@ -335,6 +335,11 @@ class VertexAIBackend(BaseBackend):
         total_output_tokens = 0
         total_tokens = 0
 
+        # Optional: save raw responses to disk for debugging (verbose mode)
+        verbose_save_dir_str: str = str(kwargs.get("verbose_save_dir", ""))
+        verbose_file_stem: str = str(kwargs.get("verbose_file_stem", ""))
+        verbose_save_dir: Path | None = Path(verbose_save_dir_str) if verbose_save_dir_str else None
+
         # ── Step 1: Initial extraction ──────────────────────────────────────
 
         logger.info("ℹ️ Step 1: Initial extraction")
@@ -372,6 +377,15 @@ class VertexAIBackend(BaseBackend):
 
         current_markdown: str = response.text or ""
 
+        # Save raw extraction response to disk immediately (verbose mode)
+        if verbose_save_dir is not None and verbose_file_stem:
+            raw_path = verbose_save_dir / f"{verbose_file_stem}.raw_step_00.txt"
+            try:
+                raw_path.write_text(response.text or "", encoding="utf-8")
+                logger.debug("Saved raw extraction response → %s", raw_path.name)
+            except OSError as _e:
+                logger.warning("⚠️ Could not save raw response: %s", _e)
+
         if refine_iterations == 0:
             metadata = {
                 "backend": self.name,
@@ -385,6 +399,7 @@ class VertexAIBackend(BaseBackend):
                 "total_tokens": total_tokens,
                 "extraction_step": extraction_step,
                 "refinement_log": [],
+                "raw_responses": [{"step": 0, "step_type": "extraction", "raw_text": response.text or ""}],
                 "extraction_prompt_hash": extraction_prompt_hash,
                 "refinement_prompt_hash": refinement_prompt_hash,
             }
@@ -396,6 +411,7 @@ class VertexAIBackend(BaseBackend):
         all_corrections: list[dict] = []
         # step_01 = raw extraction; subsequent entries = after each refinement pass
         iteration_markdowns: list[str] = [current_markdown]
+        raw_responses: list[dict] = [{"step": 0, "step_type": "extraction", "raw_text": response.text or ""}]
         final_verdict = "N/A"
 
         for i in range(1, refine_iterations + 1):
@@ -441,6 +457,16 @@ class VertexAIBackend(BaseBackend):
             total_input_tokens += step_in
             total_output_tokens += step_out
             total_tokens += step_total
+
+            # Save raw refinement response to disk immediately (verbose mode)
+            raw_responses.append({"step": i, "step_type": "refinement", "raw_text": ref_response.text or ""})
+            if verbose_save_dir is not None and verbose_file_stem:
+                raw_path = verbose_save_dir / f"{verbose_file_stem}.raw_step_{i:02d}.txt"
+                try:
+                    raw_path.write_text(ref_response.text or "", encoding="utf-8")
+                    logger.debug("Saved raw refinement response %d → %s", i, raw_path.name)
+                except OSError as _e:
+                    logger.warning("⚠️ Could not save raw response: %s", _e)
 
             parsed = _parse_refinement_response(ref_response.text or "")
             summary = parsed.get("iteration_summary", {})
@@ -521,6 +547,7 @@ class VertexAIBackend(BaseBackend):
             "refinement_log": track_record,
             "all_corrections": all_corrections,
             "iteration_markdowns": iteration_markdowns,
+            "raw_responses": raw_responses,
             "extraction_prompt_hash": extraction_prompt_hash,
             "refinement_prompt_hash": refinement_prompt_hash,
         }

@@ -54,9 +54,11 @@ def main() -> None:
 @click.option("--refine-iterations", type=int, default=None,
               help="Iterative refinement passes (0 = extraction only).")
 @click.option("--chunk-size", type=int, default=None,
-              help="Pages per chunk (0 = no chunking). Enables large-PDF splitting.")
+              help="Pages per chunk (0 = no chunking). Enables large-document splitting (works for all file types).")
 @click.option("--chunk-overlap", type=int, default=None,
               help="Overlap pages between chunks to preserve context (default: 1).")
+@click.option("--max-chunks", type=int, default=None,
+              help="Stop after processing this many chunks (0 = all). Useful for testing large documents.")
 @click.option("--workers", type=int, default=None,
               help="Parallel workers for batch processing.")
 @click.option("--extensions", default=None,
@@ -81,6 +83,7 @@ def convert(
     refine_iterations: int | None,
     chunk_size: int | None,
     chunk_overlap: int | None,
+    max_chunks: int | None,
     workers: int | None,
     extensions: str | None,
     extraction_prompt: str | None,
@@ -122,6 +125,8 @@ def convert(
     if workers is not None:
         proc_overrides["workers"] = workers
 
+    _max_chunks: int = max_chunks if max_chunks is not None else 0
+
     batch_overrides: dict = {}
     if extensions is not None:
         batch_overrides["extensions"] = [e.strip() for e in extensions.split(",")]
@@ -140,7 +145,7 @@ def convert(
     if input_p.is_dir():
         _run_batch(input_p, output_path, settings, validate_output, dry_run)
     else:
-        _run_single(input_p, output_path, settings, validate_output, dry_run)
+        _run_single(input_p, output_path, settings, validate_output, dry_run, _max_chunks)
 
 
 def _run_single(
@@ -149,9 +154,13 @@ def _run_single(
     settings,
     validate_output: bool,
     dry_run: bool,
+    max_chunks: int = 0,
 ) -> None:
+    import shutil as _shutil
+    import tempfile as _tempfile
     from src.chunker import split_pdf, merge_chunks
     from src.pipeline import Pipeline
+    from src.file_converter import needs_conversion
 
     backend_name = settings.processing.backend
     chunk_size = settings.processing.chunk_size
@@ -160,36 +169,63 @@ def _run_single(
     backend_kwargs = _build_backend_kwargs(settings, dry_run)
     pipe = Pipeline(backend=backend_name)
 
-    from src.file_converter import needs_conversion
-    if needs_conversion(pdf_path) and chunk_size > 0:
-        console.print(f"[yellow]Note:[/yellow] Chunking is not supported for {pdf_path.suffix} files — ignoring chunk size.")
-        chunk_size = 0
+    needs_conv = needs_conversion(pdf_path)
+    _tmp_conv_dir: Path | None = None
+    working_pdf = pdf_path
 
-    if chunk_size > 0:
-        console.print(f"[cyan]Chunking enabled:[/cyan] {chunk_size} pages/chunk, overlap={chunk_overlap}")
-        chunks = split_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
-        console.print(f"  Split into {len(chunks)} chunk(s)")
+    # Convert non-PDF to PDF upfront when chunking is requested
+    if needs_conv and chunk_size > 0:
+        from src.file_converter import convert_to_pdf
+        _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
+        working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+        console.print(f"[cyan]Converted[/cyan] {pdf_path.name} → {working_pdf.name} (temporary)")
 
-        results = []
-        for chunk_idx, chunk_path, start_page, end_page in chunks:
-            console.print(f"  Processing chunk {chunk_idx + 1}/{len(chunks)} (pages {start_page}–{end_page})…")
-            r = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
-            results.append(r)
+    try:
+        if chunk_size > 0:
+            console.print(f"[cyan]Chunking enabled:[/cyan] {chunk_size} pages/chunk, overlap={chunk_overlap}")
+            all_chunks = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
+            total_available = len(all_chunks)
+            console.print(f"  Split into {total_available} chunk(s)")
 
-        merged_md = merge_chunks([r.markdown for r in results])
-        last = results[-1]
-        result = ConversionResult(
-            source=pdf_path,
-            markdown=merged_md,
-            backend_used=last.backend_used,
-            metadata={
-                **last.metadata,
-                "page_count": sum(r.metadata.get("page_count", 0) for r in results),
-                "chunks": len(results),
-            },
-        )
-    else:
-        result = pipe.convert(pdf_path, validate_output=validate_output, **backend_kwargs)
+            if max_chunks > 0 and max_chunks < total_available:
+                console.print(f"  Processing first {max_chunks} of {total_available} chunk(s) (--max-chunks={max_chunks})")
+                chunks = all_chunks[:max_chunks]
+            else:
+                chunks = all_chunks
+
+            results = []
+            for chunk_idx, chunk_path, start_page, end_page in chunks:
+                console.print(f"  Processing chunk {chunk_idx + 1}/{len(chunks)} (pages {start_page}–{end_page})…")
+                r = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
+                results.append(r)
+
+            merged_md = merge_chunks([r.markdown for r in results])
+            last = results[-1]
+            result = ConversionResult(
+                source=pdf_path,
+                markdown=merged_md,
+                backend_used=last.backend_used,
+                metadata={
+                    **last.metadata,
+                    "page_count": sum(r.metadata.get("page_count", 0) for r in results),
+                    "chunks": len(results),
+                },
+            )
+        else:
+            r = pipe.convert(pdf_path, validate_output=validate_output, **backend_kwargs)
+            if r.source != pdf_path:
+                result = ConversionResult(
+                    source=pdf_path,
+                    markdown=r.markdown,
+                    backend_used=r.backend_used,
+                    metadata=r.metadata,
+                    validation=r.validation,
+                )
+            else:
+                result = r
+    finally:
+        if _tmp_conv_dir is not None:
+            _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
 
     out = _resolve_output(pdf_path, output_path)
     if out:
