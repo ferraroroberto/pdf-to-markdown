@@ -109,7 +109,11 @@ def _run_conversion(
     backend_kwargs: dict | None = None,
     chunk_size: int = 0,
     chunk_overlap: int = 1,
+    max_chunks: int = 0,
 ) -> None:
+    import shutil as _shutil
+    import tempfile as _tempfile
+
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = _TeeStream(log_queue, orig_stdout)
     sys.stderr = _TeeStream(log_queue, orig_stderr)
@@ -122,61 +126,129 @@ def _run_conversion(
 
     try:
         pipe = Pipeline(backend=backend)
-        kwargs = backend_kwargs or {}
+        kwargs = dict(backend_kwargs or {})
 
-        # Skip chunking for non-PDF files (they are converted to PDF first, but
-        # chunking requires a real PDF on disk before conversion)
+        output_dir = pdf_path.parent
+        output_stem = pdf_path.stem
+
+        # In verbose mode, pass save dir to backend so raw AI responses are
+        # written to disk immediately after each API call.
+        if verbose and backend == "vertexai":
+            kwargs["verbose_save_dir"] = output_dir
+            kwargs["verbose_file_stem"] = output_stem
+
         from src.file_converter import needs_conversion
-        if chunk_size > 0 and needs_conversion(pdf_path):
-            root.warning(
-                "⚠️ Chunking is not supported for %s files — processing as whole file",
-                pdf_path.suffix,
-            )
-            chunk_size = 0
+        needs_conv = needs_conversion(pdf_path)
 
-        if chunk_size > 0:
-            from src.chunker import cleanup_chunks, merge_chunks, split_pdf
-            from src.logger_exec import append_row
+        # For non-PDF files: convert to PDF upfront when chunking is requested
+        # or verbose mode is on (so the converted PDF is saved for inspection).
+        # Otherwise the pipeline handles conversion internally via ensure_pdf().
+        _tmp_conv_dir: Path | None = None
+        working_pdf = pdf_path
 
-            chunks = split_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
-            chunk_markdowns: list[str] = []
-            combined_meta: dict = {}
-
-            for chunk_idx, chunk_path, start_page, end_page in chunks:
+        if needs_conv and (chunk_size > 0 or verbose):
+            from src.file_converter import convert_to_pdf
+            if verbose:
+                # Save converted PDF permanently next to the source file
+                working_pdf = convert_to_pdf(pdf_path, output_dir)
                 root.info(
-                    "ℹ️ Chunk %d/%d — pages %d–%d",
-                    chunk_idx + 1, len(chunks), start_page, end_page,
+                    "ℹ️ Converted %s → %s (saved for inspection)",
+                    pdf_path.name, working_pdf.name,
                 )
-                try:
-                    r = pipe.convert(chunk_path, validate_output=False, **kwargs)
-                    chunk_markdowns.append(r.markdown)
-                    combined_meta = r.metadata
-                    _log_steps(pdf_path, chunk_idx, f"{start_page}-{end_page}", r, append_row)
-                except Exception as exc:  # noqa: BLE001
-                    root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
-                    chunk_markdowns.append(
-                        f"\n\n> ⚠️ Chunk {chunk_idx + 1} (pages {start_page}–{end_page}) failed: {exc}\n\n"
+            else:
+                # Temporary directory — cleaned up in finally block
+                _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
+                working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+
+        try:
+            if chunk_size > 0:
+                from src.chunker import cleanup_chunks, merge_chunks, split_pdf
+                from src.logger_exec import append_row
+
+                all_chunk_list = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
+                total_available = len(all_chunk_list)
+
+                if max_chunks > 0 and max_chunks < total_available:
+                    root.info(
+                        "ℹ️ Processing first %d of %d chunk(s) (max_chunks=%d)",
+                        max_chunks, total_available, max_chunks,
+                    )
+                    chunks = all_chunk_list[:max_chunks]
+                else:
+                    chunks = all_chunk_list
+
+                chunk_markdowns: list[str] = []
+                combined_meta: dict = {}
+
+                for chunk_idx, chunk_path, start_page, end_page in chunks:
+                    root.info(
+                        "ℹ️ Chunk %d/%d — pages %d–%d",
+                        chunk_idx + 1, len(chunks), start_page, end_page,
                     )
 
-            merged = merge_chunks(chunk_markdowns)
-            result = ConversionResult(
-                source=pdf_path,
-                markdown=merged,
-                backend_used=backend,
-                metadata={
-                    **combined_meta,
-                    "chunks": len(chunks),
-                    "chunk_size": chunk_size,
-                },
-            )
-            try:
-                cleanup_chunks(pdf_path)
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            from src.logger_exec import append_row
-            result = pipe.convert(pdf_path, validate_output=False, **kwargs)
-            _log_steps(pdf_path, 0, "all", result, append_row)
+                    chunk_kwargs = dict(kwargs)
+                    if verbose and backend == "vertexai":
+                        chunk_stem = f"{output_stem}_chunk_{chunk_idx + 1:03d}"
+                        chunk_kwargs["verbose_save_dir"] = output_dir
+                        chunk_kwargs["verbose_file_stem"] = chunk_stem
+
+                    try:
+                        r = pipe.convert(chunk_path, validate_output=False, **chunk_kwargs)
+                        chunk_markdowns.append(r.markdown)
+                        combined_meta = r.metadata
+
+                        # Save chunk markdown immediately so it survives partial failures
+                        if verbose:
+                            chunk_md_path = output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md"
+                            chunk_md_path.write_text(r.markdown, encoding="utf-8")
+                            root.debug(
+                                "Saved chunk %d markdown → %s",
+                                chunk_idx + 1, chunk_md_path.name,
+                            )
+
+                        _log_steps(pdf_path, chunk_idx, f"{start_page}-{end_page}", r, append_row)
+                    except Exception as exc:  # noqa: BLE001
+                        root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
+                        chunk_markdowns.append(
+                            f"\n\n> ⚠️ Chunk {chunk_idx + 1} (pages {start_page}–{end_page}) failed: {exc}\n\n"
+                        )
+
+                merged = merge_chunks(chunk_markdowns)
+                result = ConversionResult(
+                    source=pdf_path,
+                    markdown=merged,
+                    backend_used=backend,
+                    metadata={
+                        **combined_meta,
+                        "chunks": len(chunks),
+                        "chunk_size": chunk_size,
+                    },
+                )
+                try:
+                    cleanup_chunks(working_pdf)
+                except Exception:  # noqa: BLE001
+                    pass
+            else:
+                from src.logger_exec import append_row
+                # If we pre-converted (verbose + non-PDF), use the saved PDF path
+                # directly so the pipeline skips internal conversion.
+                r = pipe.convert(working_pdf, validate_output=False, **kwargs)
+                # Always report source as the original input file
+                if working_pdf != pdf_path:
+                    result = ConversionResult(
+                        source=pdf_path,
+                        markdown=r.markdown,
+                        backend_used=r.backend_used,
+                        metadata=r.metadata,
+                        validation=r.validation,
+                    )
+                else:
+                    result = r
+                _log_steps(pdf_path, 0, "all", result, append_row)
+
+        finally:
+            if _tmp_conv_dir is not None:
+                _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
 
         result_queue.put(("ok", result))
     except Exception as exc:  # noqa: BLE001
@@ -272,11 +344,13 @@ def _init_state() -> None:
         "ex_log_q": None,
         "ex_result_q": None,
         "ex_output_path": None,
+        "ex_source_path": None,   # original input file path (for cleanup of converted PDF)
         "ex_verbose": False,
         # seeded from config on first load
         "ex_auth_mode": vai.auth_mode,
         "ex_chunk_size": proc.chunk_size,
         "ex_chunk_overlap": proc.chunk_overlap,
+        "ex_max_chunks": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -286,16 +360,38 @@ def _init_state() -> None:
 def _clear_output() -> None:
     prev_output: Path | None = st.session_state.get("ex_output_path")
     if prev_output is not None:
+        stem = prev_output.stem
+        parent = prev_output.parent
+        # Main markdown output
         prev_output.unlink(missing_ok=True)
-        for stale in prev_output.parent.glob(f"{prev_output.stem}.step_*.md"):
+        # Step markdown files (processed markdown after each AI step)
+        for stale in parent.glob(f"{stem}.step_*.md"):
             stale.unlink(missing_ok=True)
+        # Raw AI response text files saved during verbose processing
+        for stale in parent.glob(f"{stem}.raw_step_*.txt"):
+            stale.unlink(missing_ok=True)
+        # Per-chunk raw AI response files
+        for stale in parent.glob(f"{stem}_chunk_*.raw_step_*.txt"):
+            stale.unlink(missing_ok=True)
+        # Per-chunk intermediate markdown files
+        for stale in parent.glob(f"{stem}.chunk_*.md"):
+            stale.unlink(missing_ok=True)
+        # Corrections report
         _corr = prev_output.with_suffix(".corrections.md")
         if _corr.exists():
             _corr.unlink()
+        # Converted PDF — only delete if the source file was a non-PDF type
+        src_path_str: str | None = st.session_state.get("ex_source_path")
+        if src_path_str:
+            src = Path(src_path_str)
+            if src.suffix.lower() != ".pdf":
+                _conv_pdf = parent / (stem + ".pdf")
+                _conv_pdf.unlink(missing_ok=True)
 
     st.session_state.ex_logs = []
     st.session_state.ex_result = None
     st.session_state.ex_output_path = None
+    st.session_state.ex_source_path = None
     st.session_state.ex_verbose = False
 
 
@@ -518,14 +614,14 @@ def run() -> None:
         )
 
     # ── Chunking options ────────────────────────────────────────────────────
-    col_chunk, col_overlap, _ = st.columns([2, 2, 2])
+    col_chunk, col_overlap, col_max_chunks = st.columns([2, 2, 2])
     with col_chunk:
         chunk_size: int = st.number_input(
             "Chunk size (pages, 0 = disabled)",
             min_value=0,
             value=proc_cfg.chunk_size,
             step=5,
-            help="Split PDF into chunks of this many pages and process each independently. 0 disables chunking.",
+            help="Split the document into chunks of this many pages and process each independently. 0 disables chunking. Works for all supported file types.",
             key="ex_chunk_size_input",
             disabled=running,
         )
@@ -537,6 +633,16 @@ def run() -> None:
             step=1,
             help="Trailing pages from the previous chunk to include at the start of the next, for context continuity.",
             key="ex_chunk_overlap_input",
+            disabled=running,
+        )
+    with col_max_chunks:
+        max_chunks: int = st.number_input(
+            "Max chunks (0 = all)",
+            min_value=0,
+            value=st.session_state.get("ex_max_chunks", 0),
+            step=1,
+            help="Stop after processing this many chunks. 0 means process all chunks. Useful for testing with large documents — e.g. set to 3 to process only the first 3 chunks.",
+            key="ex_max_chunks_input",
             disabled=running,
         )
 
@@ -705,6 +811,7 @@ def run() -> None:
                     "backend_kwargs": extra_kwargs,
                     "chunk_size": chunk_size,
                     "chunk_overlap": chunk_overlap,
+                    "max_chunks": max_chunks,
                 },
                 daemon=True,
             )
@@ -714,6 +821,8 @@ def run() -> None:
             st.session_state.ex_log_q = log_q
             st.session_state.ex_result_q = result_q
             st.session_state.ex_output_path = pdf_path.with_suffix(".md")
+            st.session_state.ex_source_path = str(pdf_path)
+            st.session_state.ex_max_chunks = max_chunks
             st.session_state.ex_verbose = verbose
             st.rerun()
 
@@ -769,11 +878,18 @@ def run() -> None:
             result.save(output_path)
 
             _step_paths: list[Path] = []
+            _raw_paths: list[Path] = []
             if st.session_state.get("ex_verbose", False) and result.backend_used == "vertexai":
+                # Save processed markdown snapshots after each step
                 for _idx, _iter_md in enumerate(result.metadata.get("iteration_markdowns", []), 1):
                     _step_path = output_path.with_name(f"{output_path.stem}.step_{_idx:02d}.md")
                     _step_path.write_text(_iter_md, encoding="utf-8")
                     _step_paths.append(_step_path)
+                # Collect raw response files already written by the backend
+                for stale in sorted(output_path.parent.glob(f"{output_path.stem}.raw_step_*.txt")):
+                    _raw_paths.append(stale)
+                for stale in sorted(output_path.parent.glob(f"{output_path.stem}_chunk_*.raw_step_*.txt")):
+                    _raw_paths.append(stale)
 
             corrections_path: Path | None = None
             if result.backend_used == "vertexai":
@@ -789,8 +905,11 @@ def run() -> None:
 
             st.success(f"Saved → `{output_path}`")
             if _step_paths:
-                st.info(f"Intermediate steps saved ({len(_step_paths)}): " +
+                st.info(f"Intermediate step markdown saved ({len(_step_paths)}): " +
                         ", ".join(f"`{p.name}`" for p in _step_paths))
+            if _raw_paths:
+                st.info(f"Raw AI responses saved ({len(_raw_paths)}): " +
+                        ", ".join(f"`{p.name}`" for p in _raw_paths))
             if corrections_path is not None:
                 st.success(f"Corrections log → `{corrections_path}`")
 
