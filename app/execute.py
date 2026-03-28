@@ -370,7 +370,7 @@ def run() -> None:
     running: bool = st.session_state.ex_running
 
     # ── 1. File selection ───────────────────────────────────────────────────
-    st.subheader("📂 Select PDF File")
+    st.subheader("📂 Select File")
 
     col_input, col_browse = st.columns([5, 1])
 
@@ -381,8 +381,15 @@ def run() -> None:
             root.withdraw()
             root.wm_attributes("-topmost", 1)
             chosen = filedialog.askopenfilename(
-                title="Select a PDF file",
-                filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+                title="Select a file",
+                filetypes=[
+                    ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                    ("PDF files", "*.pdf"),
+                    ("Word documents", "*.docx *.doc"),
+                    ("PowerPoint presentations", "*.pptx *.ppt"),
+                    ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                    ("All files", "*.*"),
+                ],
             )
             root.destroy()
             if chosen:
@@ -393,7 +400,7 @@ def run() -> None:
         file_path_str = st.text_input(
             "File path",
             placeholder=r"C:\path\to\document.pdf",
-            help="Paste the full local path to the PDF file, or use Browse to pick one.",
+            help="Paste the full local path to a PDF, Word, PowerPoint, or image file, or use Browse to pick one.",
             key="file_path_input",
             disabled=running,
         )
@@ -401,27 +408,43 @@ def run() -> None:
     pdf_path: Path | None = None
 
     if file_path_str:
+        from src.file_converter import SUPPORTED_EXTENSIONS, needs_conversion
+
         p = Path(file_path_str.strip().strip('"'))
         if not p.exists():
             st.error(f"File not found: `{p}`")
-        elif p.suffix.lower() != ".pdf":
-            st.error("Only `.pdf` files are supported.")
+        elif p.suffix.lower() not in {".pdf"} | SUPPORTED_EXTENSIONS:
+            st.error(f"Unsupported file type: `{p.suffix}`. Supported: PDF, Word, PowerPoint, Excel, images.")
         else:
             pdf_path = p
             size_kb = p.stat().st_size / 1024
-            pdf_info = None
-            with st.spinner("Inspecting PDF…"):
-                try:
-                    pdf_info = classify_pdf(pdf_path)
-                except Exception:  # noqa: BLE001
-                    pass
 
-            cols = st.columns(5)
-            cols[0].metric("Size", f"{size_kb:,.1f} KB")
-            cols[1].metric("Pages", pdf_info.page_count if pdf_info else "—")
-            cols[2].metric("Classification", pdf_info.classification if pdf_info else "—")
-            cols[3].metric("Avg chars/page", f"{pdf_info.avg_chars_per_page:.0f}" if pdf_info else "—")
-            cols[4].metric("Scanned", "Yes" if pdf_info and pdf_info.is_scanned else ("No" if pdf_info else "—"))
+            if p.suffix.lower() == ".pdf":
+                pdf_info = None
+                with st.spinner("Inspecting PDF…"):
+                    try:
+                        pdf_info = classify_pdf(pdf_path)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                cols = st.columns(5)
+                cols[0].metric("Size", f"{size_kb:,.1f} KB")
+                cols[1].metric("Pages", pdf_info.page_count if pdf_info else "—")
+                cols[2].metric("Classification", pdf_info.classification if pdf_info else "—")
+                cols[3].metric("Avg chars/page", f"{pdf_info.avg_chars_per_page:.0f}" if pdf_info else "—")
+                cols[4].metric("Scanned", "Yes" if pdf_info and pdf_info.is_scanned else ("No" if pdf_info else "—"))
+            else:
+                from src.file_converter import OFFICE_EXTENSIONS, IMAGE_EXTENSIONS
+                suffix = p.suffix.lower()
+                if suffix in OFFICE_EXTENSIONS:
+                    file_type = "Office document"
+                else:
+                    file_type = "Image"
+                cols = st.columns(3)
+                cols[0].metric("Size", f"{size_kb:,.1f} KB")
+                cols[1].metric("Type", file_type)
+                cols[2].metric("Format", p.suffix.upper())
+                st.info("ℹ️ This file will be converted to PDF before extraction. **Vertex AI backend required.**")
 
     st.divider()
 

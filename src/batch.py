@@ -86,10 +86,10 @@ def run_batch(
     )
 
     if not pdfs:
-        _progress(f"No PDFs found in {folder}")
+        _progress(f"No matching files found in {folder}")
         return []
 
-    _progress(f"Found {len(pdfs)} PDF(s) in {folder}")
+    _progress(f"Found {len(pdfs)} file(s) in {folder}")
 
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -206,7 +206,18 @@ def _process_chunked(
     append_row,
     progress,
 ) -> list[ChunkResult]:
+    from src.file_converter import needs_conversion as _needs_conv
     from src.vertexai_pricing import calculate_cost
+
+    if _needs_conv(pdf_path):
+        logger.warning(
+            "⚠️ Chunking is not supported for %s files — processing as whole file",
+            pdf_path.suffix,
+        )
+        return _process_single(
+            pdf_path, pipe, backend_kwargs, validate_output, output_dir,
+            settings, pricing_data, append_row, progress,
+        )
 
     try:
         chunks = split_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
