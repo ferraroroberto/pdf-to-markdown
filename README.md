@@ -298,6 +298,7 @@ For large documents, set `--chunk-size N` (or `chunk_size` in config) to split i
 
 - Each chunk is processed as an independent document (full pipeline: extract → refine → validate).
 - `chunk_overlap` (default 1) adds trailing pages from the previous chunk to the next for context continuity.
+- At merge time, overlapped pages that were re-extracted by the next chunk are automatically deduplicated. Exact line matches are stripped first; if the LLM produced minor differences (added emoji, punctuation, reformatted URLs), fuzzy matching (≥ 85% character similarity) removes the duplicate tail from the previous chunk.
 - `--max-chunks N` (UI: **Max chunks** field) stops after N chunks — useful for testing large documents without processing the whole file.
 - Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output.
 - Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and cleaned up automatically.
