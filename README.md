@@ -7,11 +7,14 @@ Convert PDF documents into clean, structured, token-efficient Markdown for downs
 ```
 File Input (PDF, Word, PowerPoint, Excel, Image)
     │
-    ├─► [Pre-convert] Non-PDF → LibreOffice/PyMuPDF → PDF  (Vertex AI only)
+    ├─► [Pre-convert] Non-PDF → LibreOffice/PyMuPDF → PDF
+    │       └─► [Verbose] Save converted PDF to output folder
     │
     ├─► Classify (born-digital vs scanned)
     ├─► Split into chunks (optional, configurable page size + overlap)
     │       └─► Per-chunk: Extract → Post-process → (Validate)
+    │           [Verbose] Save raw AI response → {name}.raw_step_NN.txt
+    │           [Verbose] Save chunk markdown  → {name}.chunk_NNN.md
     ├─► Merge chunks into final document
     ├─► Log execution row to tmp/exec_log.jsonl
     │
@@ -151,8 +154,9 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 | `--location` | config | Vertex AI region |
 | `--model` | config | Gemini model ID |
 | `--refine-iterations` | config | Iterative refinement passes |
-| `--chunk-size` | config | Pages per chunk (0 = off) |
+| `--chunk-size` | config | Pages per chunk (0 = off). Works for all file types. |
 | `--chunk-overlap` | config | Overlap pages between chunks |
+| `--max-chunks` | 0 (all) | Stop after processing this many chunks (0 = all) |
 | `--workers` | config | Parallel workers for batch |
 | `--extensions` | `.pdf` | Comma-separated extensions for batch (e.g. `.pdf,.docx,.pptx`) |
 | `--extraction-prompt` | config | Path to extraction prompt file (relative to project root) |
@@ -216,7 +220,7 @@ The **Vertex AI backend** can process Word, PowerPoint, and image files in addit
 
 ### Notes
 
-- **Chunking** is not supported for non-PDF files. If `--chunk-size` is set and a non-PDF file is encountered, chunking is skipped with a warning and the whole file is processed.
+- **Chunking works for all file types.** When `--chunk-size` is set and a non-PDF file is given, the file is first converted to PDF, then split into chunks normally. A 50-page PowerPoint with `--chunk-size 10` produces 5 chunks.
 - The conversion step is logged in the execution log (visible in the Execution Log panel in the UI).
 - In the Batch tab, use the **File types to process** multiselect to include non-PDF extensions.
 
@@ -288,12 +292,13 @@ Two modes for Vertex AI:
 
 Set via `--auth-mode` CLI flag, the Auth Mode selector in the UI, or `auth_mode` in `config.json`.
 
-## Large PDF Chunking
+## Chunking
 
-For large PDFs, set `--chunk-size N` (or `chunk_size` in config) to split into N-page chunks:
+For large documents, set `--chunk-size N` (or `chunk_size` in config) to split into N-page chunks. **Chunking works for all supported file types** — non-PDF files (Word, PowerPoint, images) are converted to PDF first, then split.
 
 - Each chunk is processed as an independent document (full pipeline: extract → refine → validate).
 - `chunk_overlap` (default 1) adds trailing pages from the previous chunk to the next for context continuity.
+- `--max-chunks N` (UI: **Max chunks** field) stops after N chunks — useful for testing large documents without processing the whole file.
 - Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output.
 - Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and cleaned up automatically.
 
@@ -322,6 +327,23 @@ Browse and filter the log in the **📊 Log Viewer** tab, or load in Python:
 import pandas as pd
 df = pd.read_json("tmp/exec_log.jsonl", lines=True)
 ```
+
+## Verbose Mode — Intermediate File Saving
+
+When **Verbose** is enabled in the Execute tab (or `-v` on the CLI for the converted PDF), every intermediate artifact is saved to the same folder as the output file and **kept on disk** until you click **🧹 Clean** or start a new conversion of the same file.
+
+| File | When created | Content |
+|------|-------------|---------|
+| `{name}.pdf` | Non-PDF source + verbose | Converted PDF, saved before extraction starts |
+| `{name}.raw_step_00.txt` | Vertex AI, verbose | Raw text response from the initial extraction call |
+| `{name}.raw_step_01.txt` | Vertex AI, verbose + refine | Raw JSON response from refinement pass 1 |
+| `{name}.raw_step_NN.txt` | Vertex AI, verbose + refine | Raw JSON response from refinement pass N |
+| `{name}.step_01.md` | Vertex AI, verbose | Processed markdown after extraction |
+| `{name}.step_NN.md` | Vertex AI, verbose + refine | Processed markdown after refinement pass N |
+| `{name}_chunk_001.raw_step_*.txt` | Vertex AI, verbose + chunking | Raw responses per chunk |
+| `{name}.chunk_001.md` | Verbose + chunking | Markdown for chunk 1 (saved immediately after each chunk) |
+
+Raw response files are written to disk **immediately after each API call**, so if a later step crashes you can still inspect what was returned and diagnose parsing issues.
 
 ## Vertex AI Iterative Refinement
 
