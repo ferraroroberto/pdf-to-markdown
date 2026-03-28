@@ -10,7 +10,6 @@ I will provide:
 
 1. **The original PDF** (attached)
 2. **The current Markdown extraction** to audit and correct
-3. **A cumulative correction log** from previous iterations (if any)
 
 Your job is to compare the Markdown against the original PDF, identify every discrepancy, and return a fully corrected Markdown document along with a structured error report.
 
