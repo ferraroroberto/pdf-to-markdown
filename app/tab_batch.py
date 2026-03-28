@@ -20,6 +20,15 @@ from src.models import ChunkResult
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
+
+def _list_prompts() -> list[str]:
+    """Return all .md files in prompts/ as paths relative to the project root."""
+    return sorted(
+        str(p.relative_to(_PROJECT_ROOT))
+        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+    )
+
+
 # Gemini model options
 _VAI_MODELS: list[str] = [
     "gemini-2.5-pro",
@@ -312,15 +321,20 @@ def run() -> None:
             "Refinement passes", 0, 10, vai.refine_iterations,
             key="bt_refine_iterations", disabled=running,
         )
+    _prompts = _list_prompts()
     with vb5:
-        bt_extract_prompt: str = st.text_input(
-            "Extraction prompt", value=vai.extraction_prompt,
+        _ext_default = vai.extraction_prompt
+        bt_extract_prompt: str = st.selectbox(
+            "Extraction prompt", _prompts,
+            index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
             key="bt_extraction_prompt", disabled=running,
         )
     with vb6:
         if st.session_state.get("bt_refine_iterations", 0) > 0:
-            bt_refine_prompt: str = st.text_input(
-                "Refinement prompt", value=vai.refinement_prompt,
+            _ref_default = vai.refinement_prompt
+            bt_refine_prompt: str = st.selectbox(
+                "Refinement prompt", _prompts,
+                index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
                 key="bt_refinement_prompt", disabled=running,
             )
 

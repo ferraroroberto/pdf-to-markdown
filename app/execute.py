@@ -24,6 +24,15 @@ from src.pipeline import Pipeline
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
+
+def _list_prompts() -> list[str]:
+    """Return all .md files in prompts/ as paths relative to the project root."""
+    return sorted(
+        str(p.relative_to(_PROJECT_ROOT))
+        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+    )
+
+
 # Gemini model options shown in the UI (order = dropdown order)
 _VAI_MODELS: list[str] = [
     "gemini-2.5-pro",
@@ -594,20 +603,23 @@ def run() -> None:
                 key="vai_refine_iterations",
                 disabled=running,
             )
+        _prompts = _list_prompts()
         with vai_col5:
-            st.text_input(
-                "Extraction prompt file",
-                value=vai_cfg.extraction_prompt,
-                help="Path to the extraction prompt (relative to project root).",
+            _ext_default = vai_cfg.extraction_prompt
+            st.selectbox(
+                "Extraction prompt",
+                _prompts,
+                index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
                 key="vai_extraction_prompt_file",
                 disabled=running,
             )
         with vai_col6:
             if st.session_state.get("vai_refine_iterations", 0) > 0:
-                st.text_input(
-                    "Refinement prompt file",
-                    value=vai_cfg.refinement_prompt,
-                    help="Path to the refinement prompt (relative to project root).",
+                _ref_default = vai_cfg.refinement_prompt
+                st.selectbox(
+                    "Refinement prompt",
+                    _prompts,
+                    index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
                     key="vai_refinement_prompt_file",
                     disabled=running,
                 )
