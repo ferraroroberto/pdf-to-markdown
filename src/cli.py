@@ -13,18 +13,11 @@ from rich.table import Table
 
 from src.backends import BACKEND_REGISTRY, list_available
 from src.config import load_settings
+from src.logging_config import setup_logging
 from src.models import ConversionResult
 from src.validation import validate as run_validation
 
 console = Console()
-
-
-def _setup_logging(verbose: bool) -> None:
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(levelname)s %(name)s: %(message)s",
-    )
 
 
 @click.group()
@@ -93,7 +86,8 @@ def convert(
     verbose: bool,
 ) -> None:
     """Convert a single PDF/Word/PowerPoint/image or a directory of files to Markdown."""
-    _setup_logging(verbose)
+    run_id = setup_logging(verbose=verbose)
+    logging.getLogger("cli").debug("CLI convert — run_id=%s, verbose=%s", run_id, verbose)
 
     # Build CLI override dict — only include explicitly provided values
     cli_overrides: dict = {}

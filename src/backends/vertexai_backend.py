@@ -12,6 +12,7 @@ from pathlib import Path
 
 from src.auth import build_client
 from src.backends.base import BaseBackend
+from src.logging_config import log_api_timing
 
 logger = logging.getLogger("backends.vertexai")
 
@@ -224,14 +225,19 @@ def _call_with_retry(client: object, model_id: str, contents: list, config: obje
     """
     last_exc: Exception | None = None
     for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        logger.debug("API call attempt %d/%d — model=%s", attempt, _RETRY_MAX_ATTEMPTS, model_id)
         try:
-            return client.models.generate_content(  # type: ignore[attr-defined]
+            t0 = time.time()
+            result = client.models.generate_content(  # type: ignore[attr-defined]
                 model=model_id,
                 contents=contents,
                 config=config,
             )
+            logger.debug("API call succeeded in %.2fs (attempt %d)", time.time() - t0, attempt)
+            return result
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            logger.debug("API call exception (attempt %d): %s: %s", attempt, type(exc).__name__, exc)
             if attempt < _RETRY_MAX_ATTEMPTS:
                 delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
                 logger.warning(
@@ -309,6 +315,12 @@ class VertexAIBackend(BaseBackend):
             "ℹ️ Vertex AI backend — project=%s, location=%s, model=%s, auth=%s",
             project_id, location, model_id, auth_mode,
         )
+        logger.debug(
+            "convert() called — pdf_path=%s, size=%d bytes, refine_iterations=%d, "
+            "clean_stop_max_errors=%d, dry_run=%s",
+            pdf_path, pdf_path.stat().st_size if pdf_path.exists() else 0,
+            refine_iterations, clean_stop_max_errors, dry_run,
+        )
 
         # Load prompts
         extraction_prompt = _load_prompt(extraction_prompt_file)
@@ -363,7 +375,9 @@ class VertexAIBackend(BaseBackend):
             )
 
         # Build authenticated client (raises ConfigError on misconfiguration)
+        logger.debug("Building authenticated client (auth_mode=%s)", auth_mode)
         client = build_client(auth_mode=auth_mode, project_id=project_id, location=location)
+        logger.debug("Client built successfully")
 
         gen_config = types.GenerateContentConfig(
             temperature=_TEMPERATURE,
@@ -425,9 +439,14 @@ class VertexAIBackend(BaseBackend):
             "latency_s": round(latency, 2),
         }
 
-        logger.info(
-            "ℹ️ Extraction done in %.1fs — %s input + %s output tokens",
-            latency, f"{step_in:,}", f"{step_out:,}",
+        log_api_timing(
+            logger,
+            step_label="Extraction",
+            latency_s=latency,
+            input_tokens=step_in,
+            output_tokens=step_out,
+            model=model_id,
+            extra={"pdf": pdf_path.name, "prompt_hash": extraction_prompt_hash},
         )
 
         current_markdown: str = response.text or ""
@@ -524,10 +543,26 @@ class VertexAIBackend(BaseBackend):
             verdict: str = str(summary.get("verdict", "UNKNOWN"))
             final_verdict = verdict
 
+            log_api_timing(
+                logger,
+                step_label=f"Refinement pass {i}",
+                latency_s=latency,
+                input_tokens=step_in,
+                output_tokens=step_out,
+                model=model_id,
+                extra={
+                    "pdf": pdf_path.name,
+                    "errors_found": errors_found,
+                    "critical": critical,
+                    "moderate": moderate,
+                    "minor": minor,
+                    "verdict": verdict,
+                    "prompt_hash": refinement_prompt_hash,
+                },
+            )
             logger.info(
-                "ℹ️ Refinement %d: %d errors (critical=%d, moderate=%d, minor=%d) — %s — %.1fs, %s+%s tokens",
-                i, errors_found, critical, moderate, minor, verdict, latency,
-                f"{step_in:,}", f"{step_out:,}",
+                "ℹ️ Refinement %d: %d errors (critical=%d, moderate=%d, minor=%d) — %s",
+                i, errors_found, critical, moderate, minor, verdict,
             )
 
             for _c in corrections:
@@ -599,6 +634,12 @@ class VertexAIBackend(BaseBackend):
         logger.info(
             "ℹ️ Vertex AI complete — %d refinement(s), verdict=%s, total tokens=%s",
             len(track_record), final_verdict, f"{total_tokens:,}",
+        )
+        logger.debug(
+            "Vertex AI summary — total_input=%s, total_output=%s, total=%s, "
+            "corrections=%d, iterations_completed=%d",
+            f"{total_input_tokens:,}", f"{total_output_tokens:,}", f"{total_tokens:,}",
+            len(all_corrections), len(track_record),
         )
 
         return current_markdown, metadata
