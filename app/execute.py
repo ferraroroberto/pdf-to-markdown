@@ -38,6 +38,7 @@ def _list_prompts() -> list[str]:
 _VAI_MODELS: list[str] = [
     "gemini-2.5-pro",
     "gemini-2.5-flash",
+    "gemini-3.1-pro-preview",
     "gemini-3.1-flash-lite-preview",
 ]
 

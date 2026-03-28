@@ -2,7 +2,7 @@
   "vertexai": {
     "project_id": "",
     "location": "europe-west3",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-3.1-flash-lite-preview",
     "auth_mode": "api",
     "refine_iterations": 0,
     "clean_stop_max_errors": 0,
