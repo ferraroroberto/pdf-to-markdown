@@ -169,41 +169,6 @@ def _parse_refinement_response(text: str) -> dict:
         }
 
 
-def _build_cumulative_log_text(
-    track_record: list[dict],
-    all_corrections: list[dict],
-) -> str:
-    """Build a human-readable cumulative log to feed into the next refinement iteration."""
-    lines: list[str] = []
-
-    lines.append("### Cumulative Track Record\n")
-    lines.append("| Iteration | Errors Found | Critical | Moderate | Minor | Verdict |")
-    lines.append("|-----------|-------------|----------|----------|-------|---------|")
-    for row in track_record:
-        lines.append(
-            f"| {row['iteration']} | {row['errors_found']} | "
-            f"{row['critical']} | {row['moderate']} | "
-            f"{row['minor']} | {row['verdict']} |"
-        )
-    lines.append("")
-
-    # Include up to 20 most recent corrections to avoid overflowing context
-    recent = all_corrections[-20:] if len(all_corrections) > 20 else all_corrections
-    if recent:
-        lines.append("### Recent Corrections\n")
-        for j, c in enumerate(recent, 1):
-            lines.append(f"**Error {j}**")
-            lines.append(f"- Location: {c.get('location', 'N/A')}")
-            lines.append(f"- Category: {c.get('category', 'N/A')}")
-            lines.append(f"- Severity: {c.get('severity', 'N/A')}")
-            lines.append(f'- PDF says: "{c.get("pdf_says", "N/A")}"')
-            lines.append(f'- Markdown had: "{c.get("markdown_had", "N/A")}"')
-            lines.append(f'- Corrected to: "{c.get("corrected_to", "N/A")}"')
-            lines.append("")
-
-    return "\n".join(lines)
-
-
 def _call_with_retry(client: object, model_id: str, contents: list, config: object) -> object:
     """Call ``client.models.generate_content`` with exponential-backoff retry.
 
@@ -431,15 +396,12 @@ class VertexAIBackend(BaseBackend):
         all_corrections: list[dict] = []
         # step_01 = raw extraction; subsequent entries = after each refinement pass
         iteration_markdowns: list[str] = [current_markdown]
-        cumulative_log = ""
         final_verdict = "N/A"
 
         for i in range(1, refine_iterations + 1):
             logger.info("ℹ️ Step %d/%d: Refinement iteration %d", i + 1, refine_iterations + 1, i)
 
             user_message = (
-                f"This is iteration {i}. "
-                f'{"There is no prior correction log." if i == 1 else "The prior correction log is included below."}\n\n'
                 "Please audit the current Markdown against the original PDF, correct any errors, "
                 "and produce your response as a JSON object with exactly these keys:\n\n"
                 '- "iteration_summary": an object with keys "iteration" (int), "errors_found" (int), '
@@ -455,10 +417,7 @@ class VertexAIBackend(BaseBackend):
                 r'and \frac{a}{b} must be written as \\frac{a}{b}.' "\n\n"
                 "---\n\n"
                 "## Current Markdown to audit:\n\n"
-                f"{current_markdown}\n\n"
-                "---\n\n"
-                "## Cumulative correction log from previous iterations:\n\n"
-                f"{cumulative_log if cumulative_log else 'No previous iterations.'}"
+                f"{current_markdown}"
             )
 
             start = time.time()
@@ -520,7 +479,6 @@ class VertexAIBackend(BaseBackend):
             }
             track_record.append(track_row)
 
-            cumulative_log = _build_cumulative_log_text(track_record, all_corrections)
             current_markdown = corrected_markdown
             iteration_markdowns.append(current_markdown)
 
