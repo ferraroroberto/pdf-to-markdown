@@ -49,6 +49,14 @@ pdf-to-markdown/
 │   ├── postprocess.py      # Cleaning pipeline
 │   ├── validation.py       # Quality validation
 │   └── vertexai_pricing.py # Gemini pricing fetch and cache
+├── testing/
+│   ├── conftest.py         # Shared fixtures (in-memory PDF/PNG generators)
+│   ├── test_config.py      # Config loading, saving, merging
+│   ├── test_models.py      # Data models and properties
+│   ├── test_postprocess.py # Markdown cleaning pipeline
+│   ├── test_file_converter.py  # File type detection, image→PDF conversion
+│   ├── test_chunker.py     # PDF splitting and markdown merging
+│   └── test_validation.py  # Quality validation helpers
 ├── tmp/
 │   └── exec_log.jsonl      # Persistent execution log (append-only)
 ├── launch_app.bat
@@ -298,6 +306,46 @@ df = pd.read_json("tmp/exec_log.jsonl", lines=True)
 Set `--refine-iterations N` (or slider in UI) to run N self-correction passes after extraction. Each pass sends the PDF + current Markdown back to Gemini, which returns a structured JSON correction report. Stops early on `CLEAN` or diminishing returns.
 
 Recommendation: 1–2 passes for most documents; 3–5 for complex tables / financial reports.
+
+## Testing
+
+The `testing/` folder contains a self-contained unit test suite covering the core library modules. No API credentials or external services are required.
+
+```
+testing/
+├── conftest.py              # Shared fixtures (minimal PDF + PNG generators)
+├── test_config.py           # Settings load, save, override, deep-merge
+├── test_models.py           # ValidationReport, ConversionResult, ChunkResult, BatchResult
+├── test_postprocess.py      # All markdown cleaning steps + postprocess() integration
+├── test_file_converter.py   # File type detection, image→PDF conversion, ensure_pdf context manager
+├── test_chunker.py          # PDF splitting, merge_chunks, cleanup
+└── test_validation.py       # Similarity scoring, heading/table/list counting, row consistency
+```
+
+### Run the tests
+
+```bash
+.venv\Scripts\python.exe -m pytest testing/ -v
+```
+
+Run with coverage:
+
+```bash
+.venv\Scripts\python.exe -m pytest testing/ --cov=src --cov-report=term-missing
+```
+
+Run a specific module:
+
+```bash
+.venv\Scripts\python.exe -m pytest testing/test_postprocess.py -v
+```
+
+### Design principles
+
+- **No credentials needed** — backends (Vertex AI, Marker) are not called; only pure-logic and PyMuPDF paths are tested.
+- **No fixture files** — test PDFs and images are generated in-memory by `conftest.py` using PyMuPDF.
+- **Self-contained** — each test class follows Arrange-Act-Assert and has a single focus.
+- **Edge cases documented** — tests explicitly cover boundary conditions (empty inputs, threshold boundaries, missing dependencies).
 
 ## License
 
