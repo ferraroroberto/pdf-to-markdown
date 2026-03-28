@@ -115,6 +115,16 @@ def _run_conversion(
         pipe = Pipeline(backend=backend)
         kwargs = backend_kwargs or {}
 
+        # Skip chunking for non-PDF files (they are converted to PDF first, but
+        # chunking requires a real PDF on disk before conversion)
+        from src.file_converter import needs_conversion
+        if chunk_size > 0 and needs_conversion(pdf_path):
+            root.warning(
+                "⚠️ Chunking is not supported for %s files — processing as whole file",
+                pdf_path.suffix,
+            )
+            chunk_size = 0
+
         if chunk_size > 0:
             from src.chunker import cleanup_chunks, merge_chunks, split_pdf
             from src.logger_exec import append_row
