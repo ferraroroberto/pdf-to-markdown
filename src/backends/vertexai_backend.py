@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import re
 import time
 from pathlib import Path
 
+from src.auth import build_client
 from src.backends.base import BaseBackend
 
 logger = logging.getLogger("backends.vertexai")
@@ -21,26 +23,16 @@ _DEFAULT_REFINEMENT_PROMPT = "prompts/refinement.md"
 _TEMPERATURE = 0.2
 _MAX_OUTPUT_TOKENS = 65536
 
+# Retry configuration (optional improvement: exponential backoff)
+_RETRY_MAX_ATTEMPTS = 3
+_RETRY_BASE_DELAY = 2.0  # seconds
+
 # In JSON, \b \f \r are technically valid (backspace, form-feed, CR), but in
 # LaTeX/Markdown documents they almost always signal \begin, \frac, \right etc.
 # We deliberately exclude b, f, r so they get doubled like any other LaTeX command.
 # We keep \n and \t because the model genuinely uses them for newlines/tabs in strings.
 _VALID_SINGLE_ESCAPES: frozenset[str] = frozenset('"\\/nt')
 _HEX_CHARS: frozenset[str] = frozenset('0123456789abcdefABCDEF')
-
-
-def _load_config_clean_stop_max_errors() -> int | None:
-    """Read clean_stop_max_errors from config.json, or return None if not set."""
-    config_path = _project_root() / "src" / "config.json"
-    if config_path.exists():
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            val = data.get("vertexai", {}).get("clean_stop_max_errors")
-            if val is not None:
-                return int(val)
-        except Exception:  # noqa: BLE001
-            pass
-    return None
 
 
 def _project_root() -> Path:
@@ -65,6 +57,11 @@ def _load_prompt(prompt_file: str) -> str:
             f"Create it or pass the correct path via kwargs."
         )
     return path.read_text(encoding="utf-8")
+
+
+def _prompt_hash(text: str) -> str:
+    """Return a short SHA-256 hex digest for prompt versioning."""
+    return hashlib.sha256(text.encode()).hexdigest()[:8]
 
 
 def _repair_json_escapes(text: str) -> str:
@@ -147,9 +144,6 @@ def _parse_refinement_response(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # The model often embeds LaTeX/Markdown with bare backslashes (e.g. \alpha, \url)
-        # inside the corrected_markdown JSON string, which is illegal.
-        # Use a character-level scanner to repair only invalid escape sequences.
         repaired = _repair_json_escapes(text)
         try:
             return json.loads(repaired)
@@ -210,12 +204,39 @@ def _build_cumulative_log_text(
     return "\n".join(lines)
 
 
+def _call_with_retry(client: object, model_id: str, contents: list, config: object) -> object:
+    """Call ``client.models.generate_content`` with exponential-backoff retry.
+
+    Retries up to ``_RETRY_MAX_ATTEMPTS`` times on transient errors (network,
+    rate-limit, 5xx).  Raises the last exception if all attempts fail.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, _RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return client.models.generate_content(  # type: ignore[attr-defined]
+                model=model_id,
+                contents=contents,
+                config=config,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < _RETRY_MAX_ATTEMPTS:
+                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning(
+                    "⚠️ API call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt, _RETRY_MAX_ATTEMPTS, exc, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error("❌ API call failed after %d attempts: %s", _RETRY_MAX_ATTEMPTS, exc)
+    raise RuntimeError(f"Vertex AI call failed after {_RETRY_MAX_ATTEMPTS} attempts") from last_exc
+
+
 class VertexAIBackend(BaseBackend):
     """Google Gemini via Vertex AI — cloud PDF extraction with optional iterative refinement.
 
     Requires ``google-genai`` (``pip install google-genai``).
-    Authentication via ``gcloud auth application-default login`` or
-    the ``GOOGLE_APPLICATION_CREDENTIALS`` environment variable.
+    Authentication is handled by ``src.auth.build_client`` (api or gcloud mode).
     """
 
     name = "vertexai"
@@ -242,29 +263,29 @@ class VertexAIBackend(BaseBackend):
             Vertex AI region, e.g. ``"europe-west3"``. Falls back to ``LOCATION`` env var.
         model_id : str
             Gemini model string, e.g. ``"gemini-2.5-pro"``. Falls back to ``MODEL_ID`` env var.
+        auth_mode : str
+            ``"api"`` (default) or ``"gcloud"``.
         extraction_prompt_file : str
             Path to the extraction prompt Markdown file.
         refinement_prompt_file : str
             Path to the refinement prompt Markdown file.
         refine_iterations : int
             Number of iterative refinement passes (0 = extraction only).
+        clean_stop_max_errors : int
+            Early-stop threshold when verdict is CLEAN.  -1 = any CLEAN stops; 0 = only 0 errors.
+        dry_run : bool
+            If True, skip all API calls and return estimated token counts only.
         """
-        from google import genai
         from google.genai import types
 
         project_id: str = str(kwargs.get("project_id", os.getenv("PROJECT_ID", "")))
         location: str = str(kwargs.get("location", os.getenv("LOCATION", "europe-west3")))
         model_id: str = str(kwargs.get("model_id", os.getenv("MODEL_ID", "gemini-2.5-pro")))
-        api_key: str = str(kwargs.get("api_key", os.getenv("GOOGLE_API_KEY", "")))
+        auth_mode: str = str(kwargs.get("auth_mode", "api"))
         refine_iterations: int = int(kwargs.get("refine_iterations", 0))  # type: ignore[arg-type]
-        # Max errors to accept a CLEAN verdict for early stop.
-        # -1 = stop on any CLEAN verdict (legacy); 0 = only stop if 0 errors; N = stop if errors <= N.
-        _raw_cse = kwargs.get("clean_stop_max_errors", _load_config_clean_stop_max_errors())
-        # Explicit 0 is a valid threshold — treat None as "no config" → default -1 (stop on any CLEAN)
-        clean_stop_max_errors: int = int(_raw_cse) if _raw_cse is not None else -1  # type: ignore[arg-type]
-        if refine_iterations > 0:
-            _cse_label = "any CLEAN" if clean_stop_max_errors < 0 else f"errors ≤ {clean_stop_max_errors}"
-            logger.info("ℹ️ Early-stop threshold: %s", _cse_label)
+        clean_stop_max_errors: int = int(kwargs.get("clean_stop_max_errors", 0))  # type: ignore[arg-type]
+        dry_run: bool = bool(kwargs.get("dry_run", False))
+
         extraction_prompt_file: str = str(
             kwargs.get("extraction_prompt_file", _DEFAULT_EXTRACTION_PROMPT)
         )
@@ -272,49 +293,71 @@ class VertexAIBackend(BaseBackend):
             kwargs.get("refinement_prompt_file", _DEFAULT_REFINEMENT_PROMPT)
         )
 
-        if not project_id:
-            raise ValueError(
-                "Vertex AI project_id is required. "
-                "Pass it via kwargs or set the PROJECT_ID environment variable."
-            )
-
-        logger.info("ℹ️ Vertex AI backend — project=%s, location=%s, model=%s", project_id, location, model_id)
+        logger.info(
+            "ℹ️ Vertex AI backend — project=%s, location=%s, model=%s, auth=%s",
+            project_id, location, model_id, auth_mode,
+        )
 
         # Load prompts
         extraction_prompt = _load_prompt(extraction_prompt_file)
-        logger.info("ℹ️ Extraction prompt: %d chars from %s", len(extraction_prompt), extraction_prompt_file)
+        extraction_prompt_hash = _prompt_hash(extraction_prompt)
+        logger.info(
+            "ℹ️ Extraction prompt: %d chars from %s (hash=%s)",
+            len(extraction_prompt), extraction_prompt_file, extraction_prompt_hash,
+        )
 
         refinement_prompt = ""
+        refinement_prompt_hash = ""
         if refine_iterations > 0:
             refinement_prompt = _load_prompt(refinement_prompt_file)
-            logger.info("ℹ️ Refinement prompt: %d chars from %s", len(refinement_prompt), refinement_prompt_file)
+            refinement_prompt_hash = _prompt_hash(refinement_prompt)
+            logger.info(
+                "ℹ️ Refinement prompt: %d chars from %s (hash=%s)",
+                len(refinement_prompt), refinement_prompt_file, refinement_prompt_hash,
+            )
 
-        # Create client.
-        #
-        # Vertex AI Express Mode: pass api_key WITHOUT project/location constructor params.
-        # The SDK validates that (project or location) and api_key are mutually exclusive in
-        # the constructor — but env vars are allowed. We set GOOGLE_CLOUD_PROJECT/LOCATION
-        # env vars so the SDK has context, yet the explicit api_key wins (SDK clears them).
-        #
-        # ADC mode: pass project/location as constructor params; relies on
-        # Application Default Credentials (gcloud auth application-default login).
-        if api_key:
-            logger.info("ℹ️ Authenticating via Vertex AI Express Mode (API key)")
-            os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
-            os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
-            client = genai.Client(
-                vertexai=True,
-                api_key=api_key,
-                http_options=types.HttpOptions(api_version="v1beta1"),
+        if refine_iterations > 0:
+            _cse_label = "any CLEAN" if clean_stop_max_errors < 0 else f"errors ≤ {clean_stop_max_errors}"
+            logger.info("ℹ️ Early-stop threshold: %s", _cse_label)
+
+        # ── Dry-run: estimate and return without API calls ─────────────────
+        if dry_run:
+            pdf_bytes = pdf_path.read_bytes()
+            # Rough estimate: PDF bytes / 4 for token count
+            est_tokens = len(pdf_bytes) // 4 + len(extraction_prompt) // 4
+            logger.info(
+                "ℹ️ [DRY RUN] Skipping API calls. Estimated extraction tokens: ~%d", est_tokens
             )
-        else:
-            logger.info("ℹ️ Authenticating via ADC — project=%s, location=%s", project_id, location)
-            client = genai.Client(
-                vertexai=True,
-                project=project_id,
-                location=location,
-                http_options=types.HttpOptions(api_version="v1"),
+            return (
+                f"[DRY RUN] Would process {pdf_path.name} "
+                f"({len(pdf_bytes):,} bytes, ~{est_tokens:,} est. tokens) "
+                f"with model={model_id}, refine_iterations={refine_iterations}",
+                {
+                    "backend": self.name,
+                    "model": model_id,
+                    "auth_mode": auth_mode,
+                    "page_count": 0,
+                    "dry_run": True,
+                    "estimated_tokens": est_tokens,
+                    "iterations_completed": 0,
+                    "final_verdict": "DRY_RUN",
+                    "total_input_tokens": 0,
+                    "total_output_tokens": 0,
+                    "total_tokens": 0,
+                    "refinement_log": [],
+                    "extraction_prompt_hash": extraction_prompt_hash,
+                    "refinement_prompt_hash": refinement_prompt_hash,
+                },
             )
+
+        # Build authenticated client (raises ConfigError on misconfiguration)
+        client = build_client(auth_mode=auth_mode, project_id=project_id, location=location)
+
+        gen_config = types.GenerateContentConfig(
+            temperature=_TEMPERATURE,
+            max_output_tokens=_MAX_OUTPUT_TOKENS,
+            response_mime_type="text/plain",
+        )
 
         # Load PDF bytes once
         pdf_part = types.Part.from_bytes(
@@ -327,23 +370,16 @@ class VertexAIBackend(BaseBackend):
         total_output_tokens = 0
         total_tokens = 0
 
-        # ── Step 1: Initial extraction ──────────────────────────────────
+        # ── Step 1: Initial extraction ──────────────────────────────────────
 
         logger.info("ℹ️ Step 1: Initial extraction")
         start = time.time()
 
-        try:
-            response = client.models.generate_content(
-                model=model_id,
-                contents=[pdf_part, extraction_prompt],
-                config=types.GenerateContentConfig(
-                    temperature=_TEMPERATURE,
-                    max_output_tokens=_MAX_OUTPUT_TOKENS,
-                    response_mime_type="text/plain",
-                ),
-            )
-        except Exception as exc:
-            raise RuntimeError(f"Vertex AI extraction call failed: {exc}") from exc
+        response = _call_with_retry(
+            client, model_id,
+            contents=[pdf_part, extraction_prompt],
+            config=gen_config,
+        )
 
         latency = time.time() - start
         usage = response.usage_metadata
@@ -353,6 +389,16 @@ class VertexAIBackend(BaseBackend):
         total_input_tokens += step_in
         total_output_tokens += step_out
         total_tokens += step_total
+
+        # Per-step record for the extraction call (step 0)
+        extraction_step = {
+            "step": 0,
+            "step_type": "extraction",
+            "step_input_tokens": step_in,
+            "step_output_tokens": step_out,
+            "step_total_tokens": step_total,
+            "latency_s": round(latency, 2),
+        }
 
         logger.info(
             "ℹ️ Extraction done in %.1fs — %s input + %s output tokens",
@@ -365,17 +411,21 @@ class VertexAIBackend(BaseBackend):
             metadata = {
                 "backend": self.name,
                 "model": model_id,
+                "auth_mode": auth_mode,
                 "page_count": 0,
                 "iterations_completed": 0,
                 "final_verdict": "N/A",
                 "total_input_tokens": total_input_tokens,
                 "total_output_tokens": total_output_tokens,
                 "total_tokens": total_tokens,
+                "extraction_step": extraction_step,
                 "refinement_log": [],
+                "extraction_prompt_hash": extraction_prompt_hash,
+                "refinement_prompt_hash": refinement_prompt_hash,
             }
             return current_markdown, metadata
 
-        # ── Steps 2..N: Iterative refinement ────────────────────────────
+        # ── Steps 2..N: Iterative refinement ────────────────────────────────
 
         track_record: list[dict] = []
         all_corrections: list[dict] = []
@@ -413,14 +463,10 @@ class VertexAIBackend(BaseBackend):
 
             start = time.time()
             try:
-                ref_response = client.models.generate_content(
-                    model=model_id,
+                ref_response = _call_with_retry(
+                    client, model_id,
                     contents=[pdf_part, refinement_prompt, user_message],
-                    config=types.GenerateContentConfig(
-                        temperature=_TEMPERATURE,
-                        max_output_tokens=_MAX_OUTPUT_TOKENS,
-                        response_mime_type="text/plain",
-                    ),
+                    config=gen_config,
                 )
             except Exception as exc:
                 logger.warning(
@@ -459,12 +505,18 @@ class VertexAIBackend(BaseBackend):
                 _c["iteration"] = i
             all_corrections.extend(corrections)
             track_row = {
+                "step": i,  # 1-indexed; step 0 is the extraction call
+                "step_type": "refinement",
                 "iteration": i,
                 "errors_found": errors_found,
                 "critical": critical,
                 "moderate": moderate,
                 "minor": minor,
                 "verdict": verdict,
+                "step_input_tokens": step_in,
+                "step_output_tokens": step_out,
+                "step_total_tokens": step_total,
+                "latency_s": round(latency, 2),
             }
             track_record.append(track_row)
 
@@ -473,8 +525,6 @@ class VertexAIBackend(BaseBackend):
             iteration_markdowns.append(current_markdown)
 
             if verdict == "CLEAN":
-                # Honour the acceptance threshold: -1 = accept any CLEAN; >= 0 = accept only if
-                # errors_found <= threshold.
                 threshold_met = clean_stop_max_errors < 0 or errors_found <= clean_stop_max_errors
                 if threshold_met:
                     logger.info(
@@ -502,15 +552,19 @@ class VertexAIBackend(BaseBackend):
         metadata: dict = {
             "backend": self.name,
             "model": model_id,
+            "auth_mode": auth_mode,
             "page_count": 0,
             "iterations_completed": len(track_record),
             "final_verdict": final_verdict,
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "total_tokens": total_tokens,
+            "extraction_step": extraction_step,
             "refinement_log": track_record,
             "all_corrections": all_corrections,
             "iteration_markdowns": iteration_markdowns,
+            "extraction_prompt_hash": extraction_prompt_hash,
+            "refinement_prompt_hash": refinement_prompt_hash,
         }
 
         logger.info(

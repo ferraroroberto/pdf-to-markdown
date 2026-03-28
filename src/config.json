@@ -1,5 +1,27 @@
 {
   "vertexai": {
-    "clean_stop_max_errors": 0
+    "project_id": "",
+    "location": "europe-west3",
+    "model": "gemini-2.5-pro",
+    "auth_mode": "api",
+    "refine_iterations": 0,
+    "clean_stop_max_errors": 0,
+    "extraction_prompt": "prompts/extraction.md",
+    "refinement_prompt": "prompts/refinement.md"
+  },
+  "processing": {
+    "backend": "vertexai",
+    "chunk_size": 0,
+    "chunk_overlap": 1,
+    "workers": 1,
+    "validate_after_convert": false
+  },
+  "batch": {
+    "recursive": true,
+    "extensions": [".pdf"]
+  },
+  "logging": {
+    "exec_log_dir": "tmp",
+    "exec_log_file": "exec_log.jsonl"
   }
 }

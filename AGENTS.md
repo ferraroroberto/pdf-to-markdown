@@ -34,4 +34,4 @@
 8.  **PowerShell**: Use PS 7+ syntax (`&&`, chaining).
 9.  **Imports**: Standard Lib → Third Party → Local.
 10. **Error Handling**: Fail fast with clear error messages.
-11. **Streamlit**: Use `width='stretch'` instead of deprecated `use_container_width=True`.
+11. **Streamlit**: Do not use `use_container_width` (removed after 2025-12-31). Use `width='stretch'` where you would have passed `use_container_width=True`, and `width='content'` where you would have passed `use_container_width=False`.
