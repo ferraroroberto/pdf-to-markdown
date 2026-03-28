@@ -61,6 +61,10 @@ def main() -> None:
               help="Parallel workers for batch processing.")
 @click.option("--extensions", default=None,
               help="Comma-separated file extensions for batch (e.g. '.pdf,.docx,.pptx'). Default: from config.")
+@click.option("--extraction-prompt", default=None,
+              help="Path to extraction prompt file relative to project root. Default: from config.json.")
+@click.option("--refinement-prompt", default=None,
+              help="Path to refinement prompt file relative to project root. Default: from config.json.")
 @click.option("--validate", "validate_output", is_flag=True,
               help="Run quality validation on the output.")
 @click.option("--dry-run", is_flag=True,
@@ -79,6 +83,8 @@ def convert(
     chunk_overlap: int | None,
     workers: int | None,
     extensions: str | None,
+    extraction_prompt: str | None,
+    refinement_prompt: str | None,
     validate_output: bool,
     dry_run: bool,
     verbose: bool,
@@ -103,6 +109,10 @@ def convert(
         vai_overrides["model"] = model
     if refine_iterations is not None:
         vai_overrides["refine_iterations"] = refine_iterations
+    if extraction_prompt is not None:
+        vai_overrides["extraction_prompt"] = extraction_prompt
+    if refinement_prompt is not None:
+        vai_overrides["refinement_prompt"] = refinement_prompt
     if backend is not None:
         proc_overrides["backend"] = backend
     if chunk_size is not None:

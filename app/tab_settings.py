@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from src.config import load_settings, save_settings
+
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _list_prompts() -> list[str]:
+    """Return all .md files in prompts/ as paths relative to the project root."""
+    return sorted(
+        str(p.relative_to(_PROJECT_ROOT))
+        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+    )
 
 
 def run() -> None:
@@ -44,11 +56,18 @@ def run() -> None:
             new_refine = st.number_input("Default Refinement Passes", min_value=0, value=vai.refine_iterations, step=1)
             new_cse = st.number_input("Default Max Errors (CLEAN)", min_value=-1, value=vai.clean_stop_max_errors, step=1)
 
+        _prompts = _list_prompts()
         s4, s5 = st.columns([3, 3])
         with s4:
-            new_ext_prompt = st.text_input("Extraction Prompt Path", value=vai.extraction_prompt)
+            new_ext_prompt: str = st.selectbox(
+                "Default Extraction Prompt", _prompts,
+                index=_prompts.index(vai.extraction_prompt) if vai.extraction_prompt in _prompts else 0,
+            )
         with s5:
-            new_ref_prompt = st.text_input("Refinement Prompt Path", value=vai.refinement_prompt)
+            new_ref_prompt: str = st.selectbox(
+                "Default Refinement Prompt", _prompts,
+                index=_prompts.index(vai.refinement_prompt) if vai.refinement_prompt in _prompts else 0,
+            )
 
         st.markdown("---")
         st.markdown("#### 🔧 Processing")
