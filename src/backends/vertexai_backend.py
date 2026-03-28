@@ -27,6 +27,47 @@ _MAX_OUTPUT_TOKENS = 65536
 _RETRY_MAX_ATTEMPTS = 3
 _RETRY_BASE_DELAY = 2.0  # seconds
 
+# JSON Schema that constrains the refinement response structure.
+# Passed as response_schema so the model cannot invent its own format.
+_REFINEMENT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "iteration_summary": {
+            "type": "object",
+            "properties": {
+                "iteration":       {"type": "integer"},
+                "errors_found":    {"type": "integer"},
+                "content_errors":  {"type": "integer"},
+                "table_errors":    {"type": "integer"},
+                "structure_errors":{"type": "integer"},
+                "noise_errors":    {"type": "integer"},
+                "critical":        {"type": "integer"},
+                "moderate":        {"type": "integer"},
+                "minor":           {"type": "integer"},
+                "verdict":         {"type": "string", "enum": ["NEEDS ANOTHER PASS", "CLEAN"]},
+            },
+            "required": ["iteration", "errors_found", "critical", "moderate", "minor", "verdict"],
+        },
+        "corrections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "location":     {"type": "string"},
+                    "category":     {"type": "string"},
+                    "severity":     {"type": "string"},
+                    "pdf_says":     {"type": "string"},
+                    "markdown_had": {"type": "string"},
+                    "corrected_to": {"type": "string"},
+                    "risk":         {"type": "string"},
+                },
+            },
+        },
+        "corrected_markdown": {"type": "string"},
+    },
+    "required": ["iteration_summary", "corrections", "corrected_markdown"],
+}
+
 # In JSON, \b \f \r are technically valid (backspace, form-feed, CR), but in
 # LaTeX/Markdown documents they almost always signal \begin, \frac, \right etc.
 # We deliberately exclude b, f, r so they get doubled like any other LaTeX command.
@@ -142,11 +183,17 @@ def _parse_refinement_response(text: str) -> dict:
         text = "\n".join(lines)
 
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        raise json.JSONDecodeError("Expected a JSON object, got a list or scalar", text, 0)
     except json.JSONDecodeError:
         repaired = _repair_json_escapes(text)
         try:
-            return json.loads(repaired)
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict):
+                return parsed
+            raise json.JSONDecodeError("Expected a JSON object, got a list or scalar", repaired, 0)
         except json.JSONDecodeError as exc:
             pos = exc.pos or 0
             snippet = repaired[max(0, pos - 30): pos + 30].replace("\n", "↵")
@@ -324,6 +371,14 @@ class VertexAIBackend(BaseBackend):
             response_mime_type="text/plain",
         )
 
+        ref_gen_config = types.GenerateContentConfig(
+            temperature=_TEMPERATURE,
+            max_output_tokens=_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+            response_schema=_REFINEMENT_SCHEMA,
+            system_instruction=refinement_prompt,
+        )
+
         # Load PDF bytes once
         pdf_part = types.Part.from_bytes(
             data=pdf_path.read_bytes(),
@@ -418,19 +473,8 @@ class VertexAIBackend(BaseBackend):
             logger.info("ℹ️ Step %d/%d: Refinement iteration %d", i + 1, refine_iterations + 1, i)
 
             user_message = (
-                "Please audit the current Markdown against the original PDF, correct any errors, "
-                "and produce your response as a JSON object with exactly these keys:\n\n"
-                '- "iteration_summary": an object with keys "iteration" (int), "errors_found" (int), '
-                '"content_errors" (int), "table_errors" (int), "structure_errors" (int), '
-                '"noise_errors" (int), "critical" (int), "moderate" (int), "minor" (int), '
-                '"verdict" (string: "NEEDS ANOTHER PASS" or "CLEAN")\n'
-                '- "corrections": a list of objects, each with keys "location" (str), "category" (str), '
-                '"severity" (str), "pdf_says" (str), "markdown_had" (str), "corrected_to" (str), "risk" (str)\n'
-                '- "corrected_markdown": the full corrected Markdown document as a single string\n\n'
-                "Return ONLY the JSON object. No preamble, no markdown fences, no commentary outside the JSON.\n"
-                "IMPORTANT: All backslashes inside JSON string values MUST be double-escaped. "
-                r'For example, LaTeX \alpha must be written as \\alpha in the JSON string, '
-                r'and \frac{a}{b} must be written as \\frac{a}{b}.' "\n\n"
+                "Audit the current Markdown against the original PDF and return your response "
+                "as specified in your instructions.\n\n"
                 "---\n\n"
                 "## Current Markdown to audit:\n\n"
                 f"{current_markdown}"
@@ -440,8 +484,8 @@ class VertexAIBackend(BaseBackend):
             try:
                 ref_response = _call_with_retry(
                     client, model_id,
-                    contents=[pdf_part, refinement_prompt, user_message],
-                    config=gen_config,
+                    contents=[pdf_part, user_message],
+                    config=ref_gen_config,
                 )
             except Exception as exc:
                 logger.warning(
