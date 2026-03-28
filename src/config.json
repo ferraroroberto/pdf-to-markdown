@@ -22,6 +22,9 @@
   },
   "logging": {
     "exec_log_dir": "tmp",
-    "exec_log_file": "exec_log.jsonl"
+    "exec_log_file": "exec_log.jsonl",
+    "log_dir": "tmp",
+    "log_max_bytes": 10485760,
+    "log_backup_count": 5
   }
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -56,6 +57,8 @@ class Pipeline:
         from src.file_converter import SUPPORTED_EXTENSIONS, ensure_pdf, needs_conversion
 
         pdf_path = Path(pdf_path)
+        logger.debug("Pipeline.convert() — file=%s, validate=%s", pdf_path, validate_output)
+        pipeline_start = time.time()
         if not pdf_path.exists():
             raise FileNotFoundError(f"File not found: {pdf_path}")
 
@@ -82,7 +85,10 @@ class Pipeline:
 
         with ensure_pdf(pdf_path) as work_pdf:
             # Classify
+            logger.debug("Classifying PDF: %s", work_pdf)
+            t0 = time.time()
             pdf_info = classify_pdf(work_pdf)
+            logger.debug("Classification took %.3fs", time.time() - t0)
             logger.info(
                 "Classified %s as %s (%d pages, %.0f avg chars/page)",
                 original_source.name,
@@ -106,12 +112,18 @@ class Pipeline:
             logger.info("Using backend: %s", backend.name)
 
             # Extract
+            logger.debug("Starting extraction with backend=%s", backend.name)
+            t0 = time.time()
             markdown, metadata = backend.convert(work_pdf, **backend_kwargs)
+            logger.debug("Extraction took %.3fs, output=%d chars", time.time() - t0, len(markdown))
             if "page_count" not in metadata or metadata["page_count"] is None:
                 metadata["page_count"] = pdf_info.page_count
 
             # Post-process
+            logger.debug("Starting post-processing")
+            t0 = time.time()
             markdown = postprocess(markdown, **self._postprocess_options)
+            logger.debug("Post-processing took %.3fs, output=%d chars", time.time() - t0, len(markdown))
 
             # Validate
             if validate_output:
@@ -122,13 +134,18 @@ class Pipeline:
                     validation_report.char_similarity * 100,
                 )
 
-        return ConversionResult(
+        result = ConversionResult(
             source=original_source,
             markdown=markdown,
             backend_used=backend.name,
             metadata=metadata,
             validation=validation_report,
         )
+        logger.debug(
+            "Pipeline.convert() finished in %.3fs — backend=%s, chars=%d, tokens=~%d",
+            time.time() - pipeline_start, backend.name, len(markdown), result.token_estimate,
+        )
+        return result
 
     def convert_batch(
         self,

@@ -79,6 +79,11 @@ def run_batch(
         if on_progress:
             on_progress(msg)
 
+    logger.debug(
+        "run_batch() — folder=%s, recursive=%s, extensions=%s, chunk_size=%d, workers=%d",
+        folder, settings.batch.recursive, settings.batch.extensions,
+        settings.processing.chunk_size, settings.processing.workers,
+    )
     pdfs = discover(
         folder,
         recursive=settings.batch.recursive,
@@ -110,6 +115,8 @@ def run_batch(
 
     for file_idx, pdf_path in enumerate(pdfs, 1):
         _progress(f"[{file_idx}/{len(pdfs)}] {pdf_path.name}")
+        logger.debug("Processing file %d/%d: %s (%d bytes)",
+                      file_idx, len(pdfs), pdf_path, pdf_path.stat().st_size)
 
         if chunk_size > 0:
             file_results = _process_chunked(

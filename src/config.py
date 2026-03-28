@@ -59,6 +59,9 @@ class BatchSettings:
 class LoggingSettings:
     exec_log_dir: str = "tmp"
     exec_log_file: str = "exec_log.jsonl"
+    log_dir: str = "tmp"
+    log_max_bytes: int = 10 * 1024 * 1024  # 10 MB per file
+    log_backup_count: int = 5
 
 
 @dataclass
@@ -121,6 +124,9 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
         logging=LoggingSettings(
             exec_log_dir=str(log_raw.get("exec_log_dir", "tmp")),
             exec_log_file=str(log_raw.get("exec_log_file", "exec_log.jsonl")),
+            log_dir=str(log_raw.get("log_dir", "tmp")),
+            log_max_bytes=int(log_raw.get("log_max_bytes", 10 * 1024 * 1024)),
+            log_backup_count=int(log_raw.get("log_backup_count", 5)),
         ),
     )
 

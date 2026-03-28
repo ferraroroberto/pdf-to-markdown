@@ -20,6 +20,7 @@ from src import vertexai_pricing
 from src.backends import list_available
 from src.classifier import classify_pdf
 from src.config import load_settings
+from src.logging_config import get_file_handler
 from src.models import ConversionResult
 from src.pipeline import Pipeline
 
@@ -185,8 +186,16 @@ def _run_conversion(
     root = logging.getLogger()
     handler = _QueueHandler(log_queue)
     handler.setFormatter(logging.Formatter("%(levelname)-8s  %(name)s: %(message)s"))
+    handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     root.addHandler(handler)
-    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    root.setLevel(logging.DEBUG)  # let handlers decide
+
+    # Ensure the rotating file handler (DEBUG level) is also present in this thread
+    file_handler = get_file_handler()
+    _added_file_handler = False
+    if file_handler and file_handler not in root.handlers:
+        root.addHandler(file_handler)
+        _added_file_handler = True
 
     try:
         pipe = Pipeline(backend=backend)
@@ -343,6 +352,8 @@ def _run_conversion(
         result_queue.put(("error", str(exc)))
     finally:
         root.removeHandler(handler)
+        if _added_file_handler and file_handler:
+            root.removeHandler(file_handler)
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr
         log_queue.put(None)

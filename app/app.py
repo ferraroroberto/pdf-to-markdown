@@ -13,13 +13,17 @@ try:
 except ImportError:
     pass
 
+# Ensure project root is on sys.path so src.* imports resolve
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Initialise centralised logging (console=INFO, file=DEBUG in tmp/)
+from src.logging_config import setup_logging  # noqa: E402
+setup_logging()
+
 # Suppress "missing ScriptRunContext" warnings from nested event loops (tkinter dialog).
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(
     logging.ERROR
 )
-
-# Ensure project root is on sys.path so src.* imports resolve
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 st.set_page_config(
     page_title="PDF → Markdown",
