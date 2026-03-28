@@ -93,6 +93,7 @@ def _run_batch_worker(
     verbose: bool,
     result_q: queue.Queue,
     log_q: queue.Queue,
+    extensions: list[str] | None = None,
 ) -> None:
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = _TeeStream(log_q, orig_stdout)
@@ -125,6 +126,7 @@ def _run_batch_worker(
             },
             "batch": {
                 "recursive": recursive,
+                "extensions": extensions or [".pdf"],
             },
         })
 
@@ -271,6 +273,20 @@ def run() -> None:
         st.markdown('<div style="margin-top:2.3rem"></div>', unsafe_allow_html=True)
         verbose: bool = st.checkbox("Verbose", key="bt_verbose_check", disabled=running)
 
+    # ── File type selection ─────────────────────────────────────────────────
+    from src.file_converter import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS
+    all_ext_options = sorted([".pdf"] + list(OFFICE_EXTENSIONS) + list(IMAGE_EXTENSIONS))
+    selected_extensions: list[str] = st.multiselect(
+        "File types to process",
+        options=all_ext_options,
+        default=cfg.batch.extensions,
+        help="Select which file types to include in batch processing. Non-PDF types require Vertex AI backend.",
+        key="bt_extensions",
+        disabled=running,
+    )
+    if not selected_extensions:
+        selected_extensions = [".pdf"]
+
     # ── Vertex AI options ───────────────────────────────────────────────────
     st.markdown("##### ☁️ Vertex AI Configuration")
     vb1, vb2, vb3 = st.columns([2, 2, 2])
@@ -374,6 +390,7 @@ def run() -> None:
                     result_q,
                     log_q,
                 ),
+                kwargs={"extensions": selected_extensions},
                 daemon=True,
             )
             thread.start()
