@@ -59,6 +59,8 @@ def main() -> None:
               help="Overlap pages between chunks to preserve context (default: 1).")
 @click.option("--workers", type=int, default=None,
               help="Parallel workers for batch processing.")
+@click.option("--extensions", default=None,
+              help="Comma-separated file extensions for batch (e.g. '.pdf,.docx,.pptx'). Default: from config.")
 @click.option("--validate", "validate_output", is_flag=True,
               help="Run quality validation on the output.")
 @click.option("--dry-run", is_flag=True,
@@ -76,11 +78,12 @@ def convert(
     chunk_size: int | None,
     chunk_overlap: int | None,
     workers: int | None,
+    extensions: str | None,
     validate_output: bool,
     dry_run: bool,
     verbose: bool,
 ) -> None:
-    """Convert a single PDF or a directory of PDFs to Markdown."""
+    """Convert a single PDF/Word/PowerPoint/image or a directory of files to Markdown."""
     _setup_logging(verbose)
 
     # Build CLI override dict — only include explicitly provided values
@@ -109,10 +112,16 @@ def convert(
     if workers is not None:
         proc_overrides["workers"] = workers
 
+    batch_overrides: dict = {}
+    if extensions is not None:
+        batch_overrides["extensions"] = [e.strip() for e in extensions.split(",")]
+
     if vai_overrides:
         cli_overrides["vertexai"] = vai_overrides
     if proc_overrides:
         cli_overrides["processing"] = proc_overrides
+    if batch_overrides:
+        cli_overrides["batch"] = batch_overrides
 
     settings = load_settings(cli_overrides)
 
@@ -140,6 +149,11 @@ def _run_single(
 
     backend_kwargs = _build_backend_kwargs(settings, dry_run)
     pipe = Pipeline(backend=backend_name)
+
+    from src.file_converter import needs_conversion
+    if needs_conversion(pdf_path) and chunk_size > 0:
+        console.print(f"[yellow]Note:[/yellow] Chunking is not supported for {pdf_path.suffix} files — ignoring chunk size.")
+        chunk_size = 0
 
     if chunk_size > 0:
         console.print(f"[cyan]Chunking enabled:[/cyan] {chunk_size} pages/chunk, overlap={chunk_overlap}")

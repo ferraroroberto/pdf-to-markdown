@@ -40,68 +40,90 @@ class Pipeline:
         validate_output: bool = False,
         **backend_kwargs: object,
     ) -> ConversionResult:
-        """Convert a single PDF to Markdown.
+        """Convert a single PDF (or supported Office/image file) to Markdown.
 
         Parameters
         ----------
         pdf_path:
-            Path to the PDF file.
+            Path to the input file (PDF, Word, PowerPoint, Excel, or image).
+            Non-PDF types are only supported with the Vertex AI backend.
         validate_output:
             If True, run quality validation against the source PDF.
         **backend_kwargs:
             Extra keyword arguments forwarded to the backend's ``convert()``
             method (e.g. ``force_ocr``, ``page_range``).
         """
+        from src.file_converter import SUPPORTED_EXTENSIONS, ensure_pdf, needs_conversion
+
         pdf_path = Path(pdf_path)
         if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
-        if pdf_path.suffix.lower() != ".pdf":
-            raise ValueError(f"Not a PDF file: {pdf_path}")
+            raise FileNotFoundError(f"File not found: {pdf_path}")
 
-        # Classify
-        pdf_info = classify_pdf(pdf_path)
-        logger.info(
-            "Classified %s as %s (%d pages, %.0f avg chars/page)",
-            pdf_path.name,
-            pdf_info.classification,
-            pdf_info.page_count,
-            pdf_info.avg_chars_per_page,
-        )
+        suffix = pdf_path.suffix.lower()
+        if suffix != ".pdf":
+            if suffix not in SUPPORTED_EXTENSIONS:
+                raise ValueError(
+                    f"Unsupported file type: {pdf_path.suffix!r}. "
+                    f"Supported: .pdf + {sorted(SUPPORTED_EXTENSIONS)}"
+                )
+            if self._backend_name not in (None, "vertexai"):
+                raise ValueError(
+                    f"File type '{pdf_path.suffix}' is only supported with the "
+                    f"Vertex AI backend. Current backend: '{self._backend_name}'"
+                )
 
-        # Select backend
-        if self._backend_name:
-            backend = get_backend(self._backend_name)
-        else:
-            backend = get_best_available(needs_ocr=pdf_info.is_scanned)
+        original_source = pdf_path
 
-        if pdf_info.is_scanned and not backend.supports_scanned():
-            logger.warning(
-                "Backend '%s' does not support scanned PDFs — results may be poor",
-                backend.name,
-            )
-
-        logger.info("Using backend: %s", backend.name)
-
-        # Extract
-        markdown, metadata = backend.convert(pdf_path, **backend_kwargs)
-        if "page_count" not in metadata or metadata["page_count"] is None:
-            metadata["page_count"] = pdf_info.page_count
-
-        # Post-process
-        markdown = postprocess(markdown, **self._postprocess_options)
-
-        # Validate
+        # Variables that must survive the with-block
+        backend = None
+        markdown = ""
+        metadata: dict = {}
         validation_report = None
-        if validate_output:
-            validation_report = validate(pdf_path, markdown)
+
+        with ensure_pdf(pdf_path) as work_pdf:
+            # Classify
+            pdf_info = classify_pdf(work_pdf)
             logger.info(
-                "Validation: %s (similarity=%.1f%%)",
-                "PASS" if validation_report.passed else "FAIL",
-                validation_report.char_similarity * 100,
+                "Classified %s as %s (%d pages, %.0f avg chars/page)",
+                original_source.name,
+                pdf_info.classification,
+                pdf_info.page_count,
+                pdf_info.avg_chars_per_page,
             )
+
+            # Select backend
+            if self._backend_name:
+                backend = get_backend(self._backend_name)
+            else:
+                backend = get_best_available(needs_ocr=pdf_info.is_scanned)
+
+            if pdf_info.is_scanned and not backend.supports_scanned():
+                logger.warning(
+                    "Backend '%s' does not support scanned PDFs — results may be poor",
+                    backend.name,
+                )
+
+            logger.info("Using backend: %s", backend.name)
+
+            # Extract
+            markdown, metadata = backend.convert(work_pdf, **backend_kwargs)
+            if "page_count" not in metadata or metadata["page_count"] is None:
+                metadata["page_count"] = pdf_info.page_count
+
+            # Post-process
+            markdown = postprocess(markdown, **self._postprocess_options)
+
+            # Validate
+            if validate_output:
+                validation_report = validate(work_pdf, markdown)
+                logger.info(
+                    "Validation: %s (similarity=%.1f%%)",
+                    "PASS" if validation_report.passed else "FAIL",
+                    validation_report.char_similarity * 100,
+                )
 
         return ConversionResult(
-            source=pdf_path,
+            source=original_source,
             markdown=markdown,
             backend_used=backend.name,
             metadata=metadata,
@@ -114,30 +136,39 @@ class Pipeline:
         output_dir: str | Path | None = None,
         workers: int = 1,
         validate_output: bool = False,
+        extensions: list[str] | None = None,
         **backend_kwargs: object,
     ) -> list[ConversionResult]:
-        """Convert all PDFs found under *input_path*.
+        """Convert all matching files found under *input_path*.
 
         Parameters
         ----------
         input_path:
-            Directory to search for ``**/*.pdf`` files.
+            Directory to search for files.
         output_dir:
             If given, save each result as ``.md`` in this directory.
         workers:
             Number of parallel worker processes.  ``1`` means sequential.
         validate_output:
             If True, validate every conversion.
+        extensions:
+            File extensions to match (lower-case, with dot), e.g. ``[".pdf", ".docx"]``.
+            Defaults to ``[".pdf"]``.
         **backend_kwargs:
             Extra arguments forwarded to each backend call.
         """
         input_path = Path(input_path)
-        pdfs = sorted(input_path.glob("**/*.pdf"))
+        exts = {e.lower() for e in (extensions or [".pdf"])}
+        pattern = "**/*"
+        pdfs = sorted(
+            p for p in input_path.glob(pattern)
+            if p.is_file() and p.suffix.lower() in exts
+        )
         if not pdfs:
-            logger.warning("No PDF files found in %s", input_path)
+            logger.warning("No matching files found in %s", input_path)
             return []
 
-        logger.info("Found %d PDF(s) in %s", len(pdfs), input_path)
+        logger.info("Found %d file(s) in %s", len(pdfs), input_path)
 
         if workers <= 1:
             results = [
