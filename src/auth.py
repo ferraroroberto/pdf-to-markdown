@@ -75,22 +75,29 @@ def build_client(auth_mode: str, project_id: str, location: str) -> object:
                 "Set it in your .env file or export it before running."
             )
         logger.info("ℹ️ Authenticating via Vertex AI Express Mode (API key)")
+        logger.debug("API key present (%d chars), project=%s, location=%s",
+                      len(api_key), project_id, location)
         os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
         os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
-        return genai.Client(
+        client = genai.Client(
             vertexai=True,
             api_key=api_key,
             http_options=types.HttpOptions(api_version="v1beta1"),
         )
+        logger.debug("API-mode client created successfully")
+        return client
 
     # auth_mode == GCLOUD_MODE
     logger.info(
         "ℹ️ Authenticating via ADC (gcloud) — project=%s, location=%s",
         project_id, location,
     )
-    return genai.Client(
+    logger.debug("Building gcloud client with ADC — project=%s, location=%s", project_id, location)
+    client = genai.Client(
         vertexai=True,
         project=project_id,
         location=location,
         http_options=types.HttpOptions(api_version="v1"),
     )
+    logger.debug("ADC-mode client created successfully")
+    return client

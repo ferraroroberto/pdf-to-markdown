@@ -48,6 +48,7 @@ pdf-to-markdown/
 │   ├── config.py           # Settings loader / saver
 │   ├── file_converter.py   # Pre-conversion: Office/image → PDF (Vertex AI only)
 │   ├── logger_exec.py      # Structured JSONL execution logger
+│   ├── logging_config.py   # Centralised logging setup (console + rotating file)
 │   ├── models.py           # ConversionResult, ChunkResult, BatchResult, ValidationReport
 │   ├── pipeline.py         # Single-file orchestrator
 │   ├── postprocess.py      # Cleaning pipeline
@@ -62,7 +63,8 @@ pdf-to-markdown/
 │   ├── test_chunker.py     # PDF splitting and markdown merging
 │   └── test_validation.py  # Quality validation helpers
 ├── tmp/
-│   └── exec_log.jsonl      # Persistent execution log (append-only)
+│   ├── exec_log.jsonl      # Persistent execution log (append-only)
+│   └── pdf2md_*.log        # Rotating debug log files
 ├── launch_app.bat
 ├── requirements.txt
 └── README.md
@@ -276,7 +278,10 @@ All settings live in `src/config.json`. CLI flags and UI selections override the
   },
   "logging": {
     "exec_log_dir": "tmp",
-    "exec_log_file": "exec_log.jsonl"
+    "exec_log_file": "exec_log.jsonl",
+    "log_dir": "tmp",
+    "log_max_bytes": 10485760,
+    "log_backup_count": 5
   }
 }
 ```
@@ -329,6 +334,85 @@ Browse and filter the log in the **📊 Log Viewer** tab, or load in Python:
 import pandas as pd
 df = pd.read_json("tmp/exec_log.jsonl", lines=True)
 ```
+
+## Logging
+
+The project uses two complementary logging systems:
+
+1. **Execution Log** (`tmp/exec_log.jsonl`) — Structured JSONL table, one row per API call. Best for cost tracking, token audits, and the Log Viewer tab.
+2. **Debug Log** (`tmp/pdf2md_*.log`) — Traditional rotating log file at `DEBUG` level. Best for tracing execution flow, diagnosing errors, and auditing every step.
+
+### Debug Log
+
+Every run writes a detailed debug log to `tmp/pdf2md_<timestamp>.log`. The file always captures `DEBUG`-level messages regardless of the console verbosity, so you get full traceability without cluttering the UI.
+
+**What the console shows (INFO level, default):**
+
+```
+INFO      pipeline: Classified report.pdf as born-digital (12 pages, 1482 avg chars/page)
+INFO      pipeline: Using backend: vertexai
+INFO      backends.vertexai: API Extraction completed in 4.23s — model=gemini-2.5-pro, tokens=8,412 (in=6,100, out=2,312)
+```
+
+**What the file log captures (DEBUG level, always):**
+
+```
+2026-03-28T14:22:01+0000 | DEBUG    | a1b2c3d4 | pipeline.convert:58 | Pipeline.convert() — file=report.pdf, validate=False
+2026-03-28T14:22:01+0000 | DEBUG    | a1b2c3d4 | pipeline.convert:63 | Classifying PDF: report.pdf
+2026-03-28T14:22:01+0000 | DEBUG    | a1b2c3d4 | pipeline.convert:65 | Classification took 0.042s
+2026-03-28T14:22:01+0000 | INFO     | a1b2c3d4 | pipeline.convert:66 | Classified report.pdf as born-digital (12 pages, 1482 avg chars/page)
+2026-03-28T14:22:01+0000 | DEBUG    | a1b2c3d4 | backends.vertexai.convert:312 | convert() called — pdf_path=report.pdf, size=245760 bytes, ...
+2026-03-28T14:22:01+0000 | DEBUG    | a1b2c3d4 | backends.vertexai._call_with_retry:228 | API call attempt 1/3 — model=gemini-2.5-pro
+2026-03-28T14:22:05+0000 | DEBUG    | a1b2c3d4 | backends.vertexai._call_with_retry:235 | API call succeeded in 4.23s (attempt 1)
+2026-03-28T14:22:05+0000 | INFO     | a1b2c3d4 | backends.vertexai.convert:430 | API Extraction completed in 4.23s — model=gemini-2.5-pro, tokens=8,412 (in=6,100, out=2,312)
+2026-03-28T14:22:05+0000 | DEBUG    | a1b2c3d4 | backends.vertexai.convert:431 | API Extraction detail: {'pdf': 'report.pdf', 'prompt_hash': '9ce3a687'}
+2026-03-28T14:22:05+0000 | DEBUG    | a1b2c3d4 | pipeline.convert:82 | Post-processing took 0.003s, output=14200 chars
+2026-03-28T14:22:05+0000 | DEBUG    | a1b2c3d4 | pipeline.convert:95 | Pipeline.convert() finished in 4.32s — backend=vertexai, chars=14200, tokens=~3550
+```
+
+### Log file format
+
+Each line contains:
+
+| Field | Example | Description |
+|---|---|---|
+| Timestamp | `2026-03-28T14:22:01+0000` | ISO-8601 UTC |
+| Level | `DEBUG` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| Run ID | `a1b2c3d4` | 8-char hex correlating all messages from one execution |
+| Location | `pipeline.convert:58` | `module.function:line` for pinpointing the source |
+| Message | (free text) | Human-readable detail |
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `logging.log_dir` | `"tmp"` | Directory for log files (relative to project root) |
+| `logging.log_max_bytes` | `10485760` (10 MB) | Max size per log file before rotation |
+| `logging.log_backup_count` | `5` | Number of rotated log files to keep |
+
+### Verbose mode and log levels
+
+| Mode | Console | File |
+|---|---|---|
+| Default | `INFO` | `DEBUG` |
+| `--verbose` / Verbose checkbox | `DEBUG` | `DEBUG` |
+
+With `--verbose` (CLI) or the Verbose checkbox (UI), the console output matches the file — you see every debug message in real time. Without verbose, the console stays clean (INFO) while the file always captures full DEBUG detail.
+
+### API call timing
+
+Every API call (extraction and refinement) is logged at `INFO` level with wall-clock latency, model, and token counts. This appears in both the Streamlit UI log stream and the file log:
+
+```
+INFO  backends.vertexai: API Extraction completed in 4.23s — model=gemini-2.5-pro, tokens=8,412 (in=6,100, out=2,312)
+INFO  backends.vertexai: API Refinement pass 1 completed in 3.87s — model=gemini-2.5-pro, tokens=12,045 (in=8,500, out=3,545)
+```
+
+### Correlation and auditing
+
+- The **Run ID** (`a1b2c3d4`) groups all log messages from a single CLI invocation or Execute-tab run. Use `grep a1b2c3d4 tmp/pdf2md_*.log` to extract a complete execution trace.
+- Retry attempts, backoff delays, and error details are logged at `DEBUG` and `WARNING` levels for full API call auditing.
+- Pipeline stages (classification, extraction, post-processing, validation) are individually timed at `DEBUG` level.
 
 ## Verbose Mode — Intermediate File Saving
 
