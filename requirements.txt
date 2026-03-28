@@ -1,5 +1,6 @@
 # Core
 pymupdf>=1.24.0
+pywin32>=306  # Office COM automation (Windows only, requires Microsoft Office)
 click>=8.0
 rich>=13.0
 

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -m pytest testing/ -v --tb=short)",
+      "Bash(.venv/Scripts/python.exe -m pytest testing/ -q)"
+    ]
+  }
+}
