@@ -31,8 +31,9 @@ pdf-to-markdown/
 │   ├── tab_settings.py     # ⚙️ Settings tab
 │   └── .streamlit/
 ├── prompts/
-│   ├── extraction.md
-│   └── refinement.md
+│   ├── extraction.md       # Universal prompt (default): text, tables, and visuals
+│   ├── extraction_text.md  # Specialized prompt: text and tables only, images skipped
+│   └── refinement.md       # Iterative quality audit prompt
 ├── src/
 │   ├── backends/           # Extraction backends (Vertex AI, Marker, pdfplumber)
 │   ├── auth.py             # Authentication factory (api | gcloud)
@@ -126,6 +127,10 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 # Batch folder processing
 .venv\Scripts\python.exe -m src.cli convert input_pdfs/ -o output/
 
+# Use the text-and-tables-only prompt (no image extraction)
+.venv\Scripts\python.exe -m src.cli convert report.pdf \
+    --extraction-prompt prompts/extraction_text.md -b vertexai -o output/
+
 # Dry run — estimate tokens and cost without calling the API
 .venv\Scripts\python.exe -m src.cli convert document.pdf --dry-run -b vertexai
 
@@ -150,6 +155,8 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 | `--chunk-overlap` | config | Overlap pages between chunks |
 | `--workers` | config | Parallel workers for batch |
 | `--extensions` | `.pdf` | Comma-separated extensions for batch (e.g. `.pdf,.docx,.pptx`) |
+| `--extraction-prompt` | config | Path to extraction prompt file (relative to project root) |
+| `--refinement-prompt` | config | Path to refinement prompt file (relative to project root) |
 | `--validate` | off | Run quality validation |
 | `--dry-run` | off | Estimate tokens, no API calls |
 | `-v / --verbose` | off | DEBUG logging |
@@ -220,6 +227,21 @@ The **Vertex AI backend** can process Word, PowerPoint, and image files in addit
 | Vertex AI  | Cloud LLM   | Yes          | Yes (via pre-conversion) | Primary — `google-genai` required |
 | Marker     | ML-powered  | Yes (OCR)    | No              | Secondary — `marker-pdf` required |
 | pdfplumber | Heuristic   | No           | No              | Secondary — always available |
+
+## Prompts
+
+The Vertex AI backend uses Markdown prompt files from the `prompts/` folder. Both the UI and CLI discover all `.md` files in that folder automatically — add a new file there and it appears as a selectable option immediately.
+
+| File | Purpose |
+|---|---|
+| `prompts/extraction.md` | **Default.** Universal prompt: reads like a human expert — extracts text, tables, and meaningful visuals (UI screenshots, charts, diagrams); omits decorative elements silently. |
+| `prompts/extraction_text.md` | Specialized: text and tables only. All images are skipped. Best for financial reports, contracts, and pure-text documents. |
+| `prompts/refinement.md` | Iterative quality audit. Used when `refine_iterations > 0`. |
+
+**Switching prompts at runtime:**
+- **UI**: Use the "Extraction prompt" and "Refinement prompt" dropdowns in the Execute or Batch tabs.
+- **CLI**: Pass `--extraction-prompt prompts/extraction_text.md` to override for a single run.
+- **Settings tab / config.json**: Change the default applied to every run.
 
 ## Configuration (`src/config.json`)
 
