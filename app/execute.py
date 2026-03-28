@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import logging
 import os
 import queue
@@ -97,6 +98,68 @@ class _QueueHandler(logging.Handler):
         self.log_queue.put(self.format(record))
 
 
+# ── Prior artifact cleanup (Execute tab) ────────────────────────────────────────
+
+
+def _erase_prior_execution_artifacts(
+    parent: Path,
+    stem: str,
+    *,
+    protect_resolved: frozenset[Path] | None = None,
+    logger: logging.Logger | None = None,
+    log_removals: bool = False,
+) -> None:
+    """Remove files from a previous run that share *stem* (main output basename).
+
+    Matches ``{stem}.*``, ``{stem}_chunk_*``, and the ``_chunks_{stem}/`` temp
+    directory. Paths whose resolved path is in *protect_resolved* are skipped
+    (typically the current source PDF so it is never deleted).
+    """
+    import shutil as _shutil
+
+    protect = protect_resolved or frozenset()
+
+    def _unlink(p: Path) -> None:
+        if not p.is_file():
+            return
+        try:
+            if p.resolve() in protect:
+                return
+        except OSError:
+            return
+        try:
+            p.unlink()
+            if log_removals and logger is not None:
+                logger.info("ℹ️ Removed prior artifact: %s", p.name)
+        except OSError as exc:
+            if logger is not None:
+                logger.warning("⚠️ Could not remove %s: %s", p.name, exc)
+
+    seen: set[Path] = set()
+    for pattern in (f"{stem}.*", f"{stem}_chunk_*"):
+        for p in parent.glob(pattern):
+            if not p.is_file():
+                continue
+            try:
+                key = p.resolve()
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            _unlink(p)
+
+    chunks_dir = parent / f"_chunks_{stem}"
+    if chunks_dir.is_dir():
+        try:
+            _shutil.rmtree(chunks_dir, ignore_errors=True)
+            if log_removals and logger is not None:
+                logger.info("ℹ️ Removed prior chunk temp dir: %s", chunks_dir.name)
+        except OSError as exc:
+            if logger is not None:
+                logger.warning("⚠️ Could not remove %s: %s", chunks_dir, exc)
+
+
 # ── Conversion worker ───────────────────────────────────────────────────────────
 
 
@@ -130,6 +193,15 @@ def _run_conversion(
 
         output_dir = pdf_path.parent
         output_stem = pdf_path.stem
+
+        _protect = frozenset({pdf_path.resolve()}) if pdf_path.exists() else frozenset()
+        _erase_prior_execution_artifacts(
+            output_dir,
+            output_stem,
+            protect_resolved=_protect,
+            logger=root,
+            log_removals=verbose,
+        )
 
         # In verbose mode, pass save dir to backend so raw AI responses are
         # written to disk immediately after each API call.
@@ -178,7 +250,7 @@ def _run_conversion(
                     chunks = all_chunk_list
 
                 chunk_markdowns: list[str] = []
-                combined_meta: dict = {}
+                chunk_metas: list[tuple[int, str, dict]] = []
 
                 for chunk_idx, chunk_path, start_page, end_page in chunks:
                     root.info(
@@ -195,34 +267,45 @@ def _run_conversion(
                     try:
                         r = pipe.convert(chunk_path, validate_output=False, **chunk_kwargs)
                         chunk_markdowns.append(r.markdown)
-                        combined_meta = r.metadata
+                        pages_label = f"{start_page}-{end_page}"
+                        chunk_metas.append((chunk_idx, pages_label, r.metadata))
 
-                        # Save chunk markdown immediately so it survives partial failures
+                        # Save chunk markdown + PDF slice immediately so they survive partial failures
                         if verbose:
                             chunk_md_path = output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md"
                             chunk_md_path.write_text(r.markdown, encoding="utf-8")
+                            chunk_pdf_path = output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.pdf"
+                            _shutil.copy2(chunk_path, chunk_pdf_path)
                             root.debug(
-                                "Saved chunk %d markdown → %s",
-                                chunk_idx + 1, chunk_md_path.name,
+                                "Saved chunk %d markdown → %s, PDF → %s",
+                                chunk_idx + 1, chunk_md_path.name, chunk_pdf_path.name,
                             )
 
-                        _log_steps(pdf_path, chunk_idx, f"{start_page}-{end_page}", r, append_row)
+                        _log_steps(pdf_path, chunk_idx, pages_label, r, append_row)
                     except Exception as exc:  # noqa: BLE001
                         root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
                         chunk_markdowns.append(
                             f"\n\n> ⚠️ Chunk {chunk_idx + 1} (pages {start_page}–{end_page}) failed: {exc}\n\n"
                         )
 
-                merged = merge_chunks(chunk_markdowns)
+                merged = merge_chunks(chunk_markdowns, chunk_overlap=chunk_overlap)
+                if backend == "vertexai" and chunk_metas:
+                    combined_meta = {
+                        **_aggregate_chunked_vertex_metadata(chunk_metas),
+                        "chunks": len(chunks),
+                        "chunk_size": chunk_size,
+                    }
+                else:
+                    combined_meta = {
+                        **(chunk_metas[-1][2] if chunk_metas else {}),
+                        "chunks": len(chunks),
+                        "chunk_size": chunk_size,
+                    }
                 result = ConversionResult(
                     source=pdf_path,
                     markdown=merged,
                     backend_used=backend,
-                    metadata={
-                        **combined_meta,
-                        "chunks": len(chunks),
-                        "chunk_size": chunk_size,
-                    },
+                    metadata=combined_meta,
                 )
                 try:
                     cleanup_chunks(working_pdf)
@@ -244,6 +327,10 @@ def _run_conversion(
                     )
                 else:
                     result = r
+                if result.backend_used == "vertexai":
+                    result.metadata["refinement_track_table"] = _build_refinement_track_table(
+                        result.metadata, 1, "all",
+                    )
                 _log_steps(pdf_path, 0, "all", result, append_row)
 
         finally:
@@ -258,6 +345,118 @@ def _run_conversion(
         sys.stdout = orig_stdout
         sys.stderr = orig_stderr
         log_queue.put(None)
+
+
+def _build_refinement_track_table(
+    meta: dict,
+    chunk_index: int,
+    chunk_pages: str,
+) -> list[dict]:
+    """One row per API call (extraction + refinement passes), log-viewer-shaped."""
+    rows: list[dict] = []
+    ext = meta.get("extraction_step", {})
+    in0 = int(ext.get("step_input_tokens", meta.get("total_input_tokens", 0)) or 0)
+    out0 = int(ext.get("step_output_tokens", meta.get("total_output_tokens", 0)) or 0)
+    rows.append({
+        "chunk": chunk_index,
+        "pages": chunk_pages,
+        "step": 0,
+        "step_type": "extraction",
+        "iteration": "—",
+        "errors": 0,
+        "critical": 0,
+        "moderate": 0,
+        "minor": 0,
+        "verdict": "—",
+        "in_tok": in0,
+        "out_tok": out0,
+    })
+    for track in meta.get("refinement_log", []):
+        it = int(track.get("iteration", track.get("step", 0)) or 0)
+        rows.append({
+            "chunk": chunk_index,
+            "pages": chunk_pages,
+            "step": int(track.get("step", it)),
+            "step_type": "refinement",
+            "iteration": it,
+            "errors": int(track.get("errors_found", 0) or 0),
+            "critical": int(track.get("critical", 0) or 0),
+            "moderate": int(track.get("moderate", 0) or 0),
+            "minor": int(track.get("minor", 0) or 0),
+            "verdict": str(track.get("verdict", "N/A")),
+            "in_tok": int(track.get("step_input_tokens", 0) or 0),
+            "out_tok": int(track.get("step_output_tokens", 0) or 0),
+        })
+    return rows
+
+
+def _aggregate_chunked_vertex_metadata(
+    chunk_metas: list[tuple[int, str, dict]],
+) -> dict:
+    """Merge Vertex *metadata* dicts from each chunk (tokens, corrections, track rows)."""
+    if not chunk_metas:
+        return {}
+    first = chunk_metas[0][2]
+    total_in = 0
+    total_out = 0
+    total_tok = 0
+    track_table: list[dict] = []
+    merged_corrections: list[dict] = []
+    chunk_summaries: list[dict] = []
+
+    for chunk_idx, pages, meta in chunk_metas:
+        ci = chunk_idx + 1
+        total_in += int(meta.get("total_input_tokens", 0) or 0)
+        total_out += int(meta.get("total_output_tokens", 0) or 0)
+        total_tok += int(meta.get("total_tokens", 0) or 0)
+        track_table.extend(_build_refinement_track_table(meta, ci, pages))
+        for c in meta.get("all_corrections", []):
+            cc = dict(c)
+            cc["chunk_index"] = ci
+            cc["chunk_pages"] = pages
+            merged_corrections.append(cc)
+        rc = len(meta.get("refinement_log", []))
+        chunk_summaries.append({
+            "chunk": ci,
+            "pages": pages,
+            "iterations_completed": rc,
+            "final_verdict": str(meta.get("final_verdict", "N/A")),
+        })
+
+    verdicts = [s["final_verdict"] for s in chunk_summaries]
+    all_clean = bool(verdicts) and all(v == "CLEAN" for v in verdicts)
+    any_refined = any(s["iterations_completed"] > 0 for s in chunk_summaries)
+    overall = (
+        "ALL CLEAN" if all_clean and any_refined else (
+            "MIXED / SEE PER CHUNK" if verdicts and any_refined else "N/A"
+        )
+    )
+    refinement_passes_total = sum(s["iterations_completed"] for s in chunk_summaries)
+    by_chunk_txt = "; ".join(
+        f"Chunk {s['chunk']} ({s['pages']}): {s['final_verdict']}"
+        for s in chunk_summaries
+    )
+
+    return {
+        "backend": first.get("backend", "vertexai"),
+        "model": first.get("model", ""),
+        "auth_mode": first.get("auth_mode", ""),
+        "extraction_prompt_hash": first.get("extraction_prompt_hash", ""),
+        "refinement_prompt_hash": first.get("refinement_prompt_hash", ""),
+        "total_input_tokens": total_in,
+        "total_output_tokens": total_out,
+        "total_tokens": total_tok,
+        "iterations_completed": refinement_passes_total,
+        "final_verdict": overall,
+        "final_verdict_by_chunk": verdicts,
+        "chunk_final_verdicts_text": by_chunk_txt,
+        "chunk_refine_summaries": chunk_summaries,
+        "refinement_track_table": track_table,
+        "all_corrections": merged_corrections,
+        "refinement_log": [],
+        "iteration_markdowns": [],
+        "raw_responses": [],
+    }
 
 
 def _log_steps(
@@ -358,36 +557,7 @@ def _init_state() -> None:
 
 
 def _clear_output() -> None:
-    prev_output: Path | None = st.session_state.get("ex_output_path")
-    if prev_output is not None:
-        stem = prev_output.stem
-        parent = prev_output.parent
-        # Main markdown output
-        prev_output.unlink(missing_ok=True)
-        # Step markdown files (processed markdown after each AI step)
-        for stale in parent.glob(f"{stem}.step_*.md"):
-            stale.unlink(missing_ok=True)
-        # Raw AI response text files saved during verbose processing
-        for stale in parent.glob(f"{stem}.raw_step_*.txt"):
-            stale.unlink(missing_ok=True)
-        # Per-chunk raw AI response files
-        for stale in parent.glob(f"{stem}_chunk_*.raw_step_*.txt"):
-            stale.unlink(missing_ok=True)
-        # Per-chunk intermediate markdown files
-        for stale in parent.glob(f"{stem}.chunk_*.md"):
-            stale.unlink(missing_ok=True)
-        # Corrections report
-        _corr = prev_output.with_suffix(".corrections.md")
-        if _corr.exists():
-            _corr.unlink()
-        # Converted PDF — only delete if the source file was a non-PDF type
-        src_path_str: str | None = st.session_state.get("ex_source_path")
-        if src_path_str:
-            src = Path(src_path_str)
-            if src.suffix.lower() != ".pdf":
-                _conv_pdf = parent / (stem + ".pdf")
-                _conv_pdf.unlink(missing_ok=True)
-
+    """Reset Execute tab session state only — does not delete files on disk."""
     st.session_state.ex_logs = []
     st.session_state.ex_result = None
     st.session_state.ex_output_path = None
@@ -402,10 +572,14 @@ def _save_corrections_report(result: ConversionResult, output_path: Path) -> Pat
     from datetime import datetime, timezone
 
     meta = result.metadata
+    track_table: list[dict] | None = meta.get("refinement_track_table")
     track_record: list[dict] = meta.get("refinement_log", [])
     all_corrections: list[dict] = meta.get("all_corrections", [])
 
-    if not track_record and not all_corrections:
+    has_refinement_rows = bool(
+        track_table and any(r.get("step_type") == "refinement" for r in track_table),
+    )
+    if not track_record and not all_corrections and not has_refinement_rows:
         return None
 
     corrections_path = output_path.with_suffix(".corrections.md")
@@ -413,39 +587,90 @@ def _save_corrections_report(result: ConversionResult, output_path: Path) -> Pat
     model = meta.get("model", "unknown")
     final_verdict = meta.get("final_verdict", "N/A")
     iters = meta.get("iterations_completed", 0)
+    summaries = meta.get("chunk_refine_summaries") or []
 
     lines: list[str] = [
         f"# Refinement Corrections — {result.source.name}",
         "",
         f"- **Generated**: {now}",
         f"- **Model**: {model}",
-        f"- **Iterations completed**: {iters}",
-        f"- **Final verdict**: {final_verdict}",
-        "",
-        "---",
-        "",
-        "## Track Record",
-        "",
-        "| Iteration | Errors | Critical | Moderate | Minor | Verdict |",
-        "|-----------|--------|----------|----------|-------|---------|",
+        f"- **Refinement pass(es) (total across chunks)**: {iters}",
+        f"- **Overall final verdict**: {final_verdict}",
     ]
-    for row in track_record:
-        verdict_icon = "✅" if row["verdict"] == "CLEAN" else "⚠️"
-        lines.append(
-            f"| {row['iteration']} | {row['errors_found']} | "
-            f"{row['critical']} | {row['moderate']} | {row['minor']} | "
-            f"{verdict_icon} {row['verdict']} |"
-        )
+    if summaries:
+        lines.append("- **Per chunk**:")
+        for s in summaries:
+            lines.append(
+                f"  - Chunk {s['chunk']} (pages {s['pages']}): "
+                f"{s['iterations_completed']} pass(es), verdict **{s['final_verdict']}**",
+            )
+    lines += ["", "---", "", "## Track Record", ""]
+
+    if track_table:
+        lines += [
+            "| Chunk | Pages | Step | Type | Iter. | Errors | Crit. | Mod. | Minor | Verdict | In tok | Out tok |",
+            "|-------|-------|------|------|-------|--------|-------|------|-------|---------|--------|---------|",
+        ]
+        for row in track_table:
+            vit = row.get("iteration", "—")
+            vit_s = str(vit) if vit != "—" else "—"
+            v = str(row.get("verdict", "—"))
+            icon = ""
+            if row.get("step_type") == "refinement" and v not in ("—", "N/A"):
+                icon = "✅ " if v == "CLEAN" else "⚠️ "
+            lines.append(
+                f"| {row['chunk']} | {row['pages']} | {row['step']} | {row['step_type']} | {vit_s} | "
+                f"{row['errors']} | {row['critical']} | {row['moderate']} | {row['minor']} | "
+                f"{icon}{v} | {row['in_tok']:,} | {row['out_tok']:,} |",
+            )
+    else:
+        lines += [
+            "| Iteration | Errors | Critical | Moderate | Minor | Verdict |",
+            "|-----------|--------|----------|----------|-------|---------|",
+        ]
+        for row in track_record:
+            verdict_icon = "✅" if row["verdict"] == "CLEAN" else "⚠️"
+            lines.append(
+                f"| {row['iteration']} | {row['errors_found']} | "
+                f"{row['critical']} | {row['moderate']} | {row['minor']} | "
+                f"{verdict_icon} {row['verdict']} |",
+            )
 
     if all_corrections:
         lines += ["", "---", "", "## Detailed Corrections", ""]
         has_steps = not all(int(c.get("iteration", 0)) == 0 for c in all_corrections)
-        sorted_corrections = (
-            sorted(all_corrections, key=lambda c: int(c.get("iteration", 0)))
-            if has_steps else all_corrections
-        )
-        for j, c in enumerate(sorted_corrections, 1):
-            lines += _format_correction(j, c, int(c.get("iteration", 0)) if has_steps else None)
+        chunk_keys = {int(c["chunk_index"]) for c in all_corrections if c.get("chunk_index") is not None}
+        multi_chunk = len(chunk_keys) > 1
+
+        def _corr_sort_key(c: dict) -> tuple:
+            return (
+                int(c.get("chunk_index", 0) or 0),
+                int(c.get("iteration", 0) or 0),
+            )
+
+        sorted_corrections = sorted(all_corrections, key=_corr_sort_key)
+
+        if multi_chunk:
+            idx = 0
+            for ck, group_it in itertools.groupby(
+                sorted_corrections, key=lambda c: int(c.get("chunk_index", 0) or 0),
+            ):
+                group = list(group_it)
+                if ck <= 0:
+                    continue
+                first = group[0]
+                pages_l = first.get("chunk_pages", "?")
+                lines += [f"### Chunk {ck} (PDF pages {pages_l})", ""]
+                for c in group:
+                    idx += 1
+                    lines += _format_correction(
+                        idx, c, int(c.get("iteration", 0)) if has_steps else None,
+                    )
+        else:
+            for j, c in enumerate(sorted_corrections, 1):
+                lines += _format_correction(
+                    j, c, int(c.get("iteration", 0)) if has_steps else None,
+                )
     else:
         lines += ["", "*No individual correction details were recorded.*"]
 
@@ -457,6 +682,10 @@ def _format_correction(index: int, c: dict, found_step: int | None = None) -> li
     severity = c.get("severity", "unknown").upper()
     category = c.get("category", "unknown")
     result = [f"#### Error {index} — {severity} · {category}", ""]
+    if c.get("chunk_index") is not None:
+        result.append(
+            f"- **Chunk**: {c['chunk_index']} (PDF pages {c.get('chunk_pages', 'N/A')})",
+        )
     if found_step is not None:
         result.append(f"- **Found in step**: {found_step:02d}")
     result += [
@@ -879,6 +1108,7 @@ def run() -> None:
 
             _step_paths: list[Path] = []
             _raw_paths: list[Path] = []
+            _chunk_pdf_paths: list[Path] = []
             if st.session_state.get("ex_verbose", False) and result.backend_used == "vertexai":
                 # Save processed markdown snapshots after each step
                 for _idx, _iter_md in enumerate(result.metadata.get("iteration_markdowns", []), 1):
@@ -890,6 +1120,9 @@ def run() -> None:
                     _raw_paths.append(stale)
                 for stale in sorted(output_path.parent.glob(f"{output_path.stem}_chunk_*.raw_step_*.txt")):
                     _raw_paths.append(stale)
+            if st.session_state.get("ex_verbose", False) and result.metadata.get("chunks", 0) > 1:
+                for p in sorted(output_path.parent.glob(f"{output_path.stem}.chunk_*.pdf")):
+                    _chunk_pdf_paths.append(p)
 
             corrections_path: Path | None = None
             if result.backend_used == "vertexai":
@@ -910,6 +1143,9 @@ def run() -> None:
             if _raw_paths:
                 st.info(f"Raw AI responses saved ({len(_raw_paths)}): " +
                         ", ".join(f"`{p.name}`" for p in _raw_paths))
+            if _chunk_pdf_paths:
+                st.info(f"Chunk PDFs saved ({len(_chunk_pdf_paths)}): " +
+                        ", ".join(f"`{p.name}`" for p in _chunk_pdf_paths))
             if corrections_path is not None:
                 st.success(f"Corrections log → `{corrections_path}`")
 
@@ -935,21 +1171,62 @@ def run() -> None:
                 vc3.metric("Total tokens", f"{total_tok:,}")
                 vc4.metric("Est. cost", cost_label)
 
+                track_table: list[dict] = meta.get("refinement_track_table") or []
+                chunk_summaries: list[dict] = meta.get("chunk_refine_summaries") or []
                 refinement_log: list[dict] = meta.get("refinement_log", [])
-                if refinement_log:
+                if track_table or refinement_log:
                     st.markdown("#### 🔄 Refinement Track Record")
-                    st.info(f"**{iters_done}** refinement pass(es) — final verdict: **{final_verdict}**")
-                    rows_md = (
-                        "| Iteration | Errors | Critical | Moderate | Minor | Verdict |\n"
-                        "|-----------|--------|----------|----------|-------|---------|"
-                    )
-                    for row in refinement_log:
-                        icon = "✅" if row["verdict"] == "CLEAN" else ("⚠️" if row["verdict"] == "NEEDS ANOTHER PASS" else "❓")
-                        rows_md += (
-                            f"\n| {row['iteration']} | {row['errors_found']} | "
-                            f"{row['critical']} | {row['moderate']} | {row['minor']} | {icon} {row['verdict']} |"
+                    if chunk_summaries and len(chunk_summaries) > 1:
+                        bullets = "  \n".join(
+                            f"- **Chunk {s['chunk']}** (pages {s['pages']}): "
+                            f"{s['iterations_completed']} refinement pass(es), verdict **{s['final_verdict']}**"
+                            for s in chunk_summaries
                         )
-                    st.markdown(rows_md)
+                        st.info(
+                            f"**{len(chunk_summaries)} chunks** — **{iters_done}** refinement pass(es) in total "
+                            f"(sum across chunks). **Overall**: **{final_verdict}**  \n{bullets}",
+                        )
+                    else:
+                        st.info(
+                            f"**{iters_done}** refinement pass(es) — final verdict: **{final_verdict}**",
+                        )
+                    if track_table:
+                        # Coerce every cell to str so PyArrow never sees mixed types per column
+                        # (e.g. extraction uses "—" for iteration, refinements use int).
+                        def _track_cell(v: object) -> str:
+                            return "—" if v is None else str(v)
+
+                        display_rows = []
+                        for row in track_table:
+                            display_rows.append({
+                                "Chunk": _track_cell(row["chunk"]),
+                                "Pages": _track_cell(row["pages"]),
+                                "Step": _track_cell(row["step"]),
+                                "Type": _track_cell(row["step_type"]),
+                                "Iter.": _track_cell(row["iteration"]),
+                                "Errors": _track_cell(row["errors"]),
+                                "Crit.": _track_cell(row["critical"]),
+                                "Mod.": _track_cell(row["moderate"]),
+                                "Minor": _track_cell(row["minor"]),
+                                "Verdict": _track_cell(row["verdict"]),
+                                "In tok": _track_cell(row["in_tok"]),
+                                "Out tok": _track_cell(row["out_tok"]),
+                            })
+                        st.dataframe(display_rows, width="stretch")
+                    else:
+                        rows_md = (
+                            "| Iteration | Errors | Critical | Moderate | Minor | Verdict |\n"
+                            "|-----------|--------|----------|----------|-------|---------|"
+                        )
+                        for row in refinement_log:
+                            icon = "✅" if row["verdict"] == "CLEAN" else (
+                                "⚠️" if row["verdict"] == "NEEDS ANOTHER PASS" else "❓"
+                            )
+                            rows_md += (
+                                f"\n| {row['iteration']} | {row['errors_found']} | "
+                                f"{row['critical']} | {row['moderate']} | {row['minor']} | {icon} {row['verdict']} |"
+                            )
+                        st.markdown(rows_md)
                 else:
                     st.info("Extraction only — no refinement passes were run.")
 
