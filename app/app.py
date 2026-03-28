@@ -13,8 +13,7 @@ try:
 except ImportError:
     pass
 
-# Suppress "missing ScriptRunContext" warnings when the main thread is in a nested
-# event loop (e.g. tkinter file dialog). Streamlit says these can be ignored in bare mode.
+# Suppress "missing ScriptRunContext" warnings from nested event loops (tkinter dialog).
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(
     logging.ERROR
 )
@@ -31,19 +30,15 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-    /* Align tabs flush with the top bar */
     .stTabs { margin-top: -64px !important; }
-    /* Hide the Streamlit deploy button */
     .stAppDeployButton { display: none; }
-    /* Tighten metric label text */
     [data-testid="stMetricLabel"] { font-size: 0.75rem !important; }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# ── Sidebar ─────────────────────────────────────────────────────────────────────
 from src.backends import list_available  # noqa: E402
 
 st.sidebar.title("📄 PDF → Markdown")
@@ -66,10 +61,23 @@ st.sidebar.markdown("\n".join(_lines))
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Project root: `{Path(__file__).parent.parent}`")
 
-# ── Tabs ───────────────────────────────────────────────────────────────────────
-(tab_execute,) = st.tabs(["⚡ Execute"])
+# ── Tabs ─────────────────────────────────────────────────────────────────────────
+tab_execute, tab_batch, tab_log, tab_settings = st.tabs(
+    ["⚡ Execute", "📂 Batch", "📊 Log Viewer", "⚙️ Settings"]
+)
 
 with tab_execute:
     import execute  # noqa: PLC0415
-
     execute.run()
+
+with tab_batch:
+    import tab_batch as batch_tab  # noqa: PLC0415
+    batch_tab.run()
+
+with tab_log:
+    import tab_log as log_tab  # noqa: PLC0415
+    log_tab.run()
+
+with tab_settings:
+    import tab_settings as settings_tab  # noqa: PLC0415
+    settings_tab.run()
