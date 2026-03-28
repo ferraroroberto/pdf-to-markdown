@@ -439,7 +439,6 @@ class VertexAIBackend(BaseBackend):
 
             user_message = (
                 f"This is iteration {i}. "
-                f'{"There is no prior correction log." if i == 1 else "The prior correction log is included below."}\n\n'
                 "Please audit the current Markdown against the original PDF, correct any errors, "
                 "and produce your response as a JSON object with exactly these keys:\n\n"
                 '- "iteration_summary": an object with keys "iteration" (int), "errors_found" (int), '
@@ -455,10 +454,7 @@ class VertexAIBackend(BaseBackend):
                 r'and \frac{a}{b} must be written as \\frac{a}{b}.' "\n\n"
                 "---\n\n"
                 "## Current Markdown to audit:\n\n"
-                f"{current_markdown}\n\n"
-                "---\n\n"
-                "## Cumulative correction log from previous iterations:\n\n"
-                f"{cumulative_log if cumulative_log else 'No previous iterations.'}"
+                f"{current_markdown}"
             )
 
             start = time.time()
