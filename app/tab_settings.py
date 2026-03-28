@@ -101,11 +101,44 @@ def run() -> None:
 
         st.markdown("---")
         st.markdown("#### 📊 Logging")
+        st.caption("Execution log (structured JSONL) paths.")
         l1, l2 = st.columns([2, 4])
         with l1:
-            new_log_dir = st.text_input("Log directory", value=log.exec_log_dir)
+            new_exec_log_dir = st.text_input(
+                "Exec log directory",
+                value=log.exec_log_dir,
+                help="Folder for execution JSONL logs.",
+            )
         with l2:
-            new_log_file = st.text_input("Log filename", value=log.exec_log_file)
+            new_exec_log_file = st.text_input(
+                "Exec log filename",
+                value=log.exec_log_file,
+                help="Filename inside the exec log directory.",
+            )
+        st.caption("Application rotating file logs (see `src/logging_config.py`).")
+        l3, l4, l5 = st.columns([2, 2, 2])
+        with l3:
+            new_app_log_dir = st.text_input(
+                "App log directory",
+                value=log.log_dir,
+                help="Folder for rotating app log files.",
+            )
+        with l4:
+            new_log_max_bytes = st.number_input(
+                "Log max bytes (per file)",
+                min_value=1024,
+                value=int(log.log_max_bytes),
+                step=1048576,
+                help="Rotate when a log file reaches this size (bytes).",
+            )
+        with l5:
+            new_log_backup_count = st.number_input(
+                "Log backup count",
+                min_value=0,
+                value=int(log.log_backup_count),
+                step=1,
+                help="Number of rotated log files to keep.",
+            )
 
         st.markdown("---")
         submitted = st.form_submit_button("💾 Save settings", type="primary")
@@ -133,8 +166,11 @@ def run() -> None:
         cfg.batch.recursive = new_recursive
         cfg.batch.extensions = exts
 
-        cfg.logging.exec_log_dir = new_log_dir
-        cfg.logging.exec_log_file = new_log_file
+        cfg.logging.exec_log_dir = new_exec_log_dir
+        cfg.logging.exec_log_file = new_exec_log_file
+        cfg.logging.log_dir = new_app_log_dir
+        cfg.logging.log_max_bytes = int(new_log_max_bytes)
+        cfg.logging.log_backup_count = int(new_log_backup_count)
 
         save_settings(cfg)
         st.success("Settings saved to `src/config.json`.")
