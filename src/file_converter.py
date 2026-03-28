@@ -1,7 +1,7 @@
 """Pre-processing: convert Office documents and images to PDF before extraction.
 
 Only used for the Vertex AI backend.
-- Word / PowerPoint / other Office formats → LibreOffice headless → PDF
+- Word / PowerPoint / other Office formats → Microsoft Office COM (pywin32) → PDF
 - Images (JPEG, PNG, BMP, TIFF, WebP, GIF) → PyMuPDF → single-page PDF
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -91,47 +90,84 @@ def ensure_pdf(source: Path) -> Generator[Path, None, None]:
 
 
 def _office_to_pdf(source: Path, output_dir: Path) -> Path:
-    """Convert an Office document to PDF using LibreOffice headless mode."""
-    logger.info("ℹ️ Converting %s to PDF via LibreOffice…", source.name)
+    """Convert an Office document to PDF using Microsoft Office COM automation.
 
-    cmd = [
-        "libreoffice", "--headless",
-        "--convert-to", "pdf",
-        "--outdir", str(output_dir),
-        str(source),
-    ]
+    Requires pywin32 (pip install pywin32) and Microsoft Office to be installed.
+    Works for Word (.doc/.docx/.rtf/.odt), Excel (.xls/.xlsx/.ods),
+    and PowerPoint (.ppt/.pptx/.odp).
+    """
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120
-        )
-    except FileNotFoundError:
+        import win32com.client
+    except ImportError:
         raise RuntimeError(
-            "LibreOffice is required for Office-to-PDF conversion but was not found. "
-            "Install it from https://www.libreoffice.org/"
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"LibreOffice conversion timed out for {source.name} (>120 s)."
+            "pywin32 is required for Office-to-PDF conversion. "
+            "Install it with: pip install pywin32"
         )
 
-    if proc.returncode != 0:
-        stderr = proc.stderr.strip()
-        raise RuntimeError(
-            f"LibreOffice conversion failed (exit {proc.returncode}) for {source.name}"
-            + (f": {stderr}" if stderr else "")
-        )
-
+    suffix = source.suffix.lower()
     pdf_path = output_dir / (source.stem + ".pdf")
+    abs_source = str(source.resolve())
+    abs_pdf = str(pdf_path.resolve())
+
+    logger.info("Converting %s to PDF via Microsoft Office COM…", source.name)
+
+    if suffix in {".doc", ".docx", ".rtf", ".odt"}:
+        _word_to_pdf(win32com.client, abs_source, abs_pdf)
+    elif suffix in {".xls", ".xlsx", ".ods"}:
+        _excel_to_pdf(win32com.client, abs_source, abs_pdf)
+    elif suffix in {".ppt", ".pptx", ".odp"}:
+        _powerpoint_to_pdf(win32com.client, abs_source, abs_pdf)
+    else:
+        raise ValueError(f"Unsupported Office format: {suffix!r}")
+
     if not pdf_path.exists():
         raise FileNotFoundError(
-            f"LibreOffice finished but expected PDF not found: {pdf_path}"
+            f"Office COM conversion finished but expected PDF not found: {pdf_path}"
         )
 
     logger.info(
-        "ℹ️ Converted %s → %s (%.1f KB)",
+        "Converted %s → %s (%.1f KB)",
         source.name, pdf_path.name, pdf_path.stat().st_size / 1024,
     )
     return pdf_path
+
+
+def _word_to_pdf(com, source: str, pdf_path: str) -> None:
+    word = com.Dispatch("Word.Application")
+    word.Visible = False
+    doc = None
+    try:
+        doc = word.Documents.Open(source)
+        doc.SaveAs(pdf_path, FileFormat=17)  # 17 = wdFormatPDF
+    finally:
+        if doc is not None:
+            doc.Close(False)
+        word.Quit()
+
+
+def _excel_to_pdf(com, source: str, pdf_path: str) -> None:
+    excel = com.Dispatch("Excel.Application")
+    excel.Visible = False
+    wb = None
+    try:
+        wb = excel.Workbooks.Open(source)
+        wb.ExportAsFixedFormat(0, pdf_path)  # 0 = xlTypePDF
+    finally:
+        if wb is not None:
+            wb.Close(False)
+        excel.Quit()
+
+
+def _powerpoint_to_pdf(com, source: str, pdf_path: str) -> None:
+    ppt = com.Dispatch("PowerPoint.Application")
+    prs = None
+    try:
+        prs = ppt.Presentations.Open(source, WithWindow=False)
+        prs.SaveAs(pdf_path, 32)  # 32 = ppSaveAsPDF
+    finally:
+        if prs is not None:
+            prs.Close()
+        ppt.Quit()
 
 
 def _image_to_pdf(source: Path, output_dir: Path) -> Path:
