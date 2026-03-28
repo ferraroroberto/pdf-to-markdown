@@ -14,7 +14,7 @@ File Input (PDF, Word, PowerPoint, Excel, Image)
     ├─► Split into chunks (optional, configurable page size + overlap)
     │       └─► Per-chunk: Extract → Post-process → (Validate)
     │           [Verbose] Save raw AI response → {name}.raw_step_NN.txt
-    │           [Verbose] Save chunk markdown  → {name}.chunk_NNN.md
+    │           [Verbose] Save chunk markdown + slice PDF → {name}.chunk_NNN.md / .pdf
     ├─► Merge chunks into final document
     ├─► Log execution row to tmp/exec_log.jsonl
     │
@@ -301,7 +301,8 @@ For large documents, set `--chunk-size N` (or `chunk_size` in config) to split i
 - At merge time, overlapped pages that were re-extracted by the next chunk are automatically deduplicated. Exact line matches are stripped first; if the LLM produced minor differences (added emoji, punctuation, reformatted URLs), fuzzy matching (≥ 85% character similarity) removes the duplicate tail from the previous chunk.
 - `--max-chunks N` (UI: **Max chunks** field) stops after N chunks — useful for testing large documents without processing the whole file.
 - Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output.
-- Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and cleaned up automatically.
+- Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and removed after the run (verbose mode also copies each slice to `{stem}.chunk_NNN.pdf` beside the output).
+- Starting a new **Execute** on the same file removes prior outputs for that basename first (`{stem}.*`, `{stem}_chunk_*`, and `_chunks_<stem>/`); the source PDF is never deleted. With **Verbose** on, each deleted path is logged in the execution log.
 
 ## Execution Log
 
@@ -331,7 +332,11 @@ df = pd.read_json("tmp/exec_log.jsonl", lines=True)
 
 ## Verbose Mode — Intermediate File Saving
 
-When **Verbose** is enabled in the Execute tab (or `-v` on the CLI for the converted PDF), every intermediate artifact is saved to the same folder as the output file and **kept on disk** until you click **🧹 Clean** or start a new conversion of the same file.
+When **Verbose** is enabled in the **Execute** tab, intermediate artifacts are saved next to the output Markdown file. The CLI `-v` flag only increases log verbosity; it does not write these artifacts (use the app for full verbose dumps).
+
+**🧹 Clean** clears the Execute tab (log and result panel) only — it does **not** delete files on disk.
+
+Starting **⚡ Execute** again on the same input removes previous outputs for that output basename first (same folder as `{name}.md`), so you do not accumulate stale steps. With Verbose on, each removed path is logged. Your original source file (e.g. `{name}.pdf`) is never deleted.
 
 | File | When created | Content |
 |------|-------------|---------|
@@ -343,6 +348,7 @@ When **Verbose** is enabled in the Execute tab (or `-v` on the CLI for the conve
 | `{name}.step_NN.md` | Vertex AI, verbose + refine | Processed markdown after refinement pass N |
 | `{name}_chunk_001.raw_step_*.txt` | Vertex AI, verbose + chunking | Raw responses per chunk |
 | `{name}.chunk_001.md` | Verbose + chunking | Markdown for chunk 1 (saved immediately after each chunk) |
+| `{name}.chunk_001.pdf` | Verbose + chunking | PDF page-range slice for chunk 1 (copy of the temp chunk file) |
 
 Raw response files are written to disk **immediately after each API call**, so if a later step crashes you can still inspect what was returned and diagnose parsing issues.
 
