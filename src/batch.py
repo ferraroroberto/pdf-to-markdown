@@ -271,7 +271,10 @@ def _process_chunked(
 
     # Save merged output
     if output_dir and chunk_results:
-        merged = merge_chunks([cr.markdown for cr in chunk_results if not cr.error])
+        merged = merge_chunks(
+            [cr.markdown for cr in chunk_results if not cr.error],
+            chunk_overlap=chunk_overlap,
+        )
         if merged:
             out_path = output_dir / (pdf_path.stem + ".md")
             out_path.write_text(merged, encoding="utf-8")

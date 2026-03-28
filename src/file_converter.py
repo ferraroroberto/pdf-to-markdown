@@ -97,6 +97,7 @@ def _office_to_pdf(source: Path, output_dir: Path) -> Path:
     and PowerPoint (.ppt/.pptx/.odp).
     """
     try:
+        import pythoncom
         import win32com.client
     except ImportError:
         raise RuntimeError(
@@ -111,25 +112,31 @@ def _office_to_pdf(source: Path, output_dir: Path) -> Path:
 
     logger.info("Converting %s to PDF via Microsoft Office COM…", source.name)
 
-    if suffix in {".doc", ".docx", ".rtf", ".odt"}:
-        _word_to_pdf(win32com.client, abs_source, abs_pdf)
-    elif suffix in {".xls", ".xlsx", ".ods"}:
-        _excel_to_pdf(win32com.client, abs_source, abs_pdf)
-    elif suffix in {".ppt", ".pptx", ".odp"}:
-        _powerpoint_to_pdf(win32com.client, abs_source, abs_pdf)
-    else:
-        raise ValueError(f"Unsupported Office format: {suffix!r}")
+    # COM must be initialized on the calling thread (e.g. Streamlit worker threads).
+    # Without this, Dispatch can fail with CO_E_NOTINITIALIZED on later runs.
+    pythoncom.CoInitialize()
+    try:
+        if suffix in {".doc", ".docx", ".rtf", ".odt"}:
+            _word_to_pdf(win32com.client, abs_source, abs_pdf)
+        elif suffix in {".xls", ".xlsx", ".ods"}:
+            _excel_to_pdf(win32com.client, abs_source, abs_pdf)
+        elif suffix in {".ppt", ".pptx", ".odp"}:
+            _powerpoint_to_pdf(win32com.client, abs_source, abs_pdf)
+        else:
+            raise ValueError(f"Unsupported Office format: {suffix!r}")
 
-    if not pdf_path.exists():
-        raise FileNotFoundError(
-            f"Office COM conversion finished but expected PDF not found: {pdf_path}"
+        if not pdf_path.exists():
+            raise FileNotFoundError(
+                f"Office COM conversion finished but expected PDF not found: {pdf_path}"
+            )
+
+        logger.info(
+            "Converted %s → %s (%.1f KB)",
+            source.name, pdf_path.name, pdf_path.stat().st_size / 1024,
         )
-
-    logger.info(
-        "Converted %s → %s (%.1f KB)",
-        source.name, pdf_path.name, pdf_path.stat().st_size / 1024,
-    )
-    return pdf_path
+        return pdf_path
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def _word_to_pdf(com, source: str, pdf_path: str) -> None:

@@ -199,7 +199,10 @@ def _run_single(
                 r = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
                 results.append(r)
 
-            merged_md = merge_chunks([r.markdown for r in results])
+            merged_md = merge_chunks(
+                [r.markdown for r in results],
+                chunk_overlap=chunk_overlap,
+            )
             last = results[-1]
             result = ConversionResult(
                 source=pdf_path,
