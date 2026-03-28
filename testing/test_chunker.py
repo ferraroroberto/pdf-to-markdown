@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from src.chunker import _CHUNK_SEPARATOR, cleanup_chunks, merge_chunks, split_pdf
+from src.chunker import (
+    _CHUNK_SEPARATOR,
+    cleanup_chunks,
+    merge_chunks,
+    split_pdf,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +55,67 @@ class TestMergeChunks:
     def test_separator_is_horizontal_rule(self):
         # The separator should include "---" so it renders as a page break in Markdown
         assert "---" in _CHUNK_SEPARATOR
+
+    def test_overlap_zero_unchanged(self):
+        a = "alpha\n\nbeta"
+        b = "gamma"
+        assert merge_chunks([a, b], chunk_overlap=0) == f"alpha\n\nbeta{_CHUNK_SEPARATOR}gamma"
+
+    def test_overlap_exact_line_suffix_prefix_dedupes(self):
+        prev = "Intro\n\nSame line one\nSame line two\nSame line three"
+        nxt = "Same line one\nSame line two\nSame line three\nNew only here"
+        out = merge_chunks([prev, nxt], chunk_overlap=1)
+        assert "Same line one" in out
+        assert out.count("Same line one") == 1
+        assert "New only here" in out
+
+    def test_overlap_fuzzy_match_dedupes_minor_differences(self):
+        """LLM re-extracts overlap pages with minor differences (emoji, punctuation)."""
+        prev = (
+            "## Day 6 – Grand Canyon → LA\n"
+            "- Stop 1: Williams, AZ\n"
+            "- Stop 2: Kingman, AZ\n"
+            "- Stop 3: Barstow, CA\n"
+            "- Overnight: LA (1/3)\n\n"
+            "## Day 7 – Universal Studios\n"
+            "- Full day at Universal Studios\n"
+            "- Overnight: LA (2/3)\n"
+        )
+        nxt = (
+            "- Stop 2: Kingman, AZ\n"
+            "- Stop 3: Barstow, CA\n"
+            "- Overnight: LA (1/3)\n\n"
+            "## 🎬 Day 7 – Universal Studios\n"  # emoji added by LLM
+            "- Full day at Universal Studios\n"
+            "- Overnight: LA (2/3)\n\n"
+            "## Day 8 – new content\n"
+        )
+        out = merge_chunks([prev, nxt], chunk_overlap=1)
+        # Overlap content should appear only once
+        assert out.count("Stop 3: Barstow") == 1
+        assert out.count("Stop 2: Kingman") == 1
+        assert out.count("Full day at Universal Studios") == 1
+        # New content must be present
+        assert "Day 8" in out
+        # Original pre-overlap content must be present
+        assert "Stop 1: Williams" in out
+
+    def test_overlap_repeated_h1_heading_dedupes_short_tail(self):
+        """Overlapped PDF pages: abbreviated end of chunk vs full start of next."""
+        prev = (
+            "Earlier content\n\n"
+            "# Turo: Booked trip\n\n"
+            "**Trip:** Sat, Jan 31 – Sun, Feb 8\n"
+            "**Vehicle:** Tesla Model Y 2024\n"
+        )
+        nxt = (
+            "# Turo: Booked trip\n"
+            "**Trip:** Sat, Jan 31 – Sun, Feb 8\n"
+            "**Delivery:** Los Angeles International Airport\n"
+        )
+        out = merge_chunks([prev, nxt], chunk_overlap=1)
+        assert out.count("# Turo: Booked trip") == 1
+        assert "**Delivery:** Los Angeles International Airport" in out
 
 
 # ---------------------------------------------------------------------------
