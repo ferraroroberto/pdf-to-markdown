@@ -76,6 +76,8 @@ def split_pdf(
                 "PyMuPDF is required for chunking. Run: pip install pymupdf"
             ) from exc
 
+    logger.debug("split_pdf() — path=%s, chunk_size=%d, overlap=%d", pdf_path, chunk_size, overlap)
+
     if chunk_size <= 0:
         raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
 
@@ -83,6 +85,7 @@ def split_pdf(
 
     doc = fitz.open(str(pdf_path))
     total_pages = doc.page_count
+    logger.debug("PDF opened: %d pages, %d bytes", total_pages, pdf_path.stat().st_size)
 
     if total_pages == 0:
         doc.close()
