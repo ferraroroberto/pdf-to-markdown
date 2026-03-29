@@ -1,21 +1,22 @@
 # Core
-pymupdf>=1.24.0
-pywin32>=306  # Office COM automation (Windows only, requires Microsoft Office)
-click>=8.0
-rich>=13.0
+pymupdf
+pywin32
+click
+rich
 
-# Backends (all installed by default)
-pdfplumber>=0.11.0
-marker-pdf>=1.0.0
-docling>=2.50.0
+# Backends (all installed by default on supported Python versions)
+pdfplumber
+# marker-pdf pins Pillow<11 and regex<2025 — no Py3.14+ Windows wheels; use Python 3.12–3.13 for Marker
+marker-pdf; python_version < "3.14"
+docling
 
 # Vertex AI backend (optional — install to enable Gemini extraction)
-google-genai>=1.0.0
-python-dotenv>=1.0.0
+google-genai
+python-dotenv
 
 # Streamlit UI
-streamlit>=1.35.0
+streamlit
 
 # Dev/test
-pytest>=8.0
+pytest
 pytest-cov
