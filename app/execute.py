@@ -17,7 +17,6 @@ from pathlib import Path
 import streamlit as st
 
 from src import vertexai_pricing
-from src.backends import list_available
 from src.classifier import classify_pdf
 from src.config import load_settings
 from src.logging_config import get_file_handler
@@ -726,13 +725,13 @@ def run() -> None:
     running: bool = st.session_state.ex_running
 
     # ── 1. File selection ───────────────────────────────────────────────────
-    st.subheader("📂 Select File")
+    st.subheader("Select File")
 
     col_input, col_browse = st.columns([5, 1])
 
     with col_browse:
         st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("🗂️  Browse…", width="stretch", key="browse_btn", disabled=running):
+        if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
             root = tk.Tk()
             root.withdraw()
             root.wm_attributes("-topmost", 1)
@@ -805,212 +804,172 @@ def run() -> None:
     st.divider()
 
     # ── 2. Options ──────────────────────────────────────────────────────────
-    st.subheader("⚙️ Options")
+    # Backend and auth mode are set in the sidebar (shared across tabs)
+    backend_choice: str = st.session_state.get("global_backend", cfg.processing.backend)
+    auth_mode: str = st.session_state.get("global_auth_mode", vai_cfg.auth_mode)
 
-    available_backends = list_available()
-    if "vertexai" in available_backends:
-        backend_options = ["vertexai"] + [b for b in available_backends if b != "vertexai"]
-    else:
-        backend_options = available_backends
+    verbose: bool = st.checkbox(
+        "Verbose",
+        help="Show DEBUG-level log messages and save intermediate artifacts.",
+        key="verbose_check",
+        disabled=running,
+    )
 
-    backend_labels: dict[str, str] = {
-        "pdfplumber": "pdfplumber  (born-digital, fast)",
-        "marker": "marker  (high accuracy, GPU optional)",
-        "vertexai": "vertexai  (Gemini on Vertex AI, cloud)",
-    }
-
-    col_backend, col_auth, col_verbose = st.columns([3, 2, 1])
-
-    with col_backend:
-        cfg_backend = cfg.processing.backend
-        cfg_backend_idx = backend_options.index(cfg_backend) if cfg_backend in backend_options else 0
-        backend_choice: str = st.selectbox(
-            "Backend",
-            backend_options,
-            index=cfg_backend_idx,
-            format_func=lambda x: backend_labels.get(x, x),
-            help="Select the extraction engine.",
-            key="backend_select",
-            disabled=running,
-        )
-
-    with col_auth:
-        auth_idx = 0 if vai_cfg.auth_mode == "api" else 1
-        auth_mode: str = st.selectbox(
-            "Auth Mode",
-            ["api", "gcloud"],
-            index=auth_idx,
-            help="**api**: uses GOOGLE_API_KEY env var (Express Mode).  **gcloud**: uses Application Default Credentials.",
-            key="auth_mode_select",
-            disabled=running,
-        )
-
-    with col_verbose:
-        st.markdown('<div style="margin-top: 2.3rem;"></div>', unsafe_allow_html=True)
-        verbose: bool = st.checkbox(
-            "Verbose",
-            help="Show DEBUG-level log messages.",
-            key="verbose_check",
-            disabled=running,
-        )
-
-    # ── Chunking options ────────────────────────────────────────────────────
-    col_chunk, col_overlap, col_max_chunks = st.columns([2, 2, 2])
-    with col_chunk:
-        chunk_size: int = st.number_input(
-            "Chunk size (pages, 0 = disabled)",
-            min_value=0,
-            value=proc_cfg.chunk_size,
-            step=5,
-            help="Split the document into chunks of this many pages and process each independently. 0 disables chunking. Works for all supported file types.",
-            key="ex_chunk_size_input",
-            disabled=running,
-        )
-    with col_overlap:
-        chunk_overlap: int = st.number_input(
-            "Chunk overlap (pages)",
-            min_value=0,
-            value=proc_cfg.chunk_overlap,
-            step=1,
-            help="Trailing pages from the previous chunk to include at the start of the next, for context continuity.",
-            key="ex_chunk_overlap_input",
-            disabled=running,
-        )
-    with col_max_chunks:
-        max_chunks: int = st.number_input(
-            "Max chunks (0 = all)",
-            min_value=0,
-            value=st.session_state.get("ex_max_chunks", 0),
-            step=1,
-            help="Stop after processing this many chunks. 0 means process all chunks. Useful for testing with large documents — e.g. set to 3 to process only the first 3 chunks.",
-            key="ex_max_chunks_input",
-            disabled=running,
-        )
-
-    # ── VertexAI-specific options ───────────────────────────────────────────
-    if backend_choice == "vertexai":
-        st.markdown("##### ☁️ Vertex AI Configuration")
-        vai_col1, vai_col2, vai_col3 = st.columns([2, 2, 2])
-
-        with vai_col1:
-            st.text_input(
-                "Project ID",
-                value=vai_cfg.project_id or os.getenv("PROJECT_ID", ""),
-                help="Your Google Cloud project ID.",
-                key="vai_project_id",
-                disabled=running,
-            )
-        with vai_col2:
-            st.text_input(
-                "Location",
-                value=vai_cfg.location,
-                help="Vertex AI region, e.g. europe-west3.",
-                key="vai_location",
-                disabled=running,
-            )
-        with vai_col3:
-            _env_model = os.getenv("MODEL_ID", vai_cfg.model)
-            _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
-            st.selectbox(
-                "Model",
-                _VAI_MODELS,
-                index=_model_idx,
-                help="Gemini model to use for extraction.",
-                key="vai_model_id",
-                disabled=running,
-            )
-
-        _cache_info = vertexai_pricing.get_cache_info()
-        _cache_status = (
-            f"Cached {_cache_info['fetched_at']} · {_cache_info['num_models']} models"
-            if _cache_info["cached"]
-            else f"Built-in fallback · {_cache_info['num_models']} models"
-        )
-        _upd_col, _status_col = st.columns([1, 4])
-        with _upd_col:
-            if st.button("🔄 Update cost table", key="update_pricing_btn", disabled=running):
-                with st.spinner("Fetching Vertex AI pricing…"):
-                    try:
-                        vertexai_pricing.fetch_and_cache()
-                        st.success("Pricing table updated.")
-                    except Exception as _e:
-                        st.error(f"Fetch failed: {_e}")
-                st.rerun()
-        with _status_col:
-            st.caption(_cache_status)
-
-        vai_col4, vai_col5, vai_col6 = st.columns([2, 2, 2])
-
-        with vai_col4:
-            st.slider(
-                "Iterative refinement passes (0 = extraction only)",
+    # ── Advanced options (chunking + Vertex AI) ──────────────────────────────
+    with st.expander("Advanced options", expanded=False):
+        # Chunking
+        st.markdown("##### Chunking")
+        col_chunk, col_overlap, col_max_chunks = st.columns([2, 2, 2])
+        with col_chunk:
+            chunk_size: int = st.number_input(
+                "Chunk size (pages, 0 = disabled)",
                 min_value=0,
-                max_value=10,
-                value=vai_cfg.refine_iterations,
-                key="vai_refine_iterations",
+                value=proc_cfg.chunk_size,
+                step=5,
+                help="Split the document into chunks of this many pages and process each independently. 0 disables chunking.",
+                key="ex_chunk_size_input",
                 disabled=running,
             )
-        _prompts = _list_prompts()
-        with vai_col5:
-            _ext_default = vai_cfg.extraction_prompt
-            st.selectbox(
-                "Extraction prompt",
-                _prompts,
-                index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
-                key="vai_extraction_prompt_file",
+        with col_overlap:
+            chunk_overlap: int = st.number_input(
+                "Chunk overlap (pages)",
+                min_value=0,
+                value=proc_cfg.chunk_overlap,
+                step=1,
+                help="Trailing pages from the previous chunk to include at the start of the next, for context continuity.",
+                key="ex_chunk_overlap_input",
                 disabled=running,
             )
-        with vai_col6:
-            if st.session_state.get("vai_refine_iterations", 0) > 0:
-                _ref_default = vai_cfg.refinement_prompt
+        with col_max_chunks:
+            max_chunks: int = st.number_input(
+                "Max chunks (0 = all)",
+                min_value=0,
+                value=st.session_state.get("ex_max_chunks", 0),
+                step=1,
+                help="Stop after processing this many chunks. 0 means process all chunks.",
+                key="ex_max_chunks_input",
+                disabled=running,
+            )
+
+        # Vertex AI configuration
+        if backend_choice == "vertexai":
+            st.markdown("##### Vertex AI Configuration")
+            vai_col1, vai_col2, vai_col3 = st.columns([2, 2, 2])
+
+            with vai_col1:
+                st.text_input(
+                    "Project ID",
+                    value=vai_cfg.project_id or os.getenv("PROJECT_ID", ""),
+                    help="Your Google Cloud project ID.",
+                    key="vai_project_id",
+                    disabled=running,
+                )
+            with vai_col2:
+                st.text_input(
+                    "Location",
+                    value=vai_cfg.location,
+                    help="Vertex AI region, e.g. europe-west3.",
+                    key="vai_location",
+                    disabled=running,
+                )
+            with vai_col3:
+                _env_model = os.getenv("MODEL_ID", vai_cfg.model)
+                _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
                 st.selectbox(
-                    "Refinement prompt",
-                    _prompts,
-                    index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
-                    key="vai_refinement_prompt_file",
+                    "Model",
+                    _VAI_MODELS,
+                    index=_model_idx,
+                    help="Gemini model to use for extraction.",
+                    key="vai_model_id",
                     disabled=running,
                 )
 
-        if st.session_state.get("vai_refine_iterations", 0) > 0:
-            vai_col7, _, __ = st.columns([2, 2, 2])
-            with vai_col7:
-                st.number_input(
-                    "Max errors to accept as CLEAN",
-                    min_value=-1,
-                    value=vai_cfg.clean_stop_max_errors,
-                    step=1,
-                    help=(
-                        "Early-stop threshold. Stop only if errors ≤ this value. "
-                        "**-1**: stop on any CLEAN. **0**: only when 0 errors remain."
-                    ),
-                    key="vai_clean_stop_max_errors",
+            _cache_info = vertexai_pricing.get_cache_info()
+            _cache_status = (
+                f"Cached {_cache_info['fetched_at']} · {_cache_info['num_models']} models"
+                if _cache_info["cached"]
+                else f"Built-in fallback · {_cache_info['num_models']} models"
+            )
+            _upd_col, _status_col = st.columns([1, 4])
+            with _upd_col:
+                if st.button("Update cost table", key="update_pricing_btn", disabled=running):
+                    with st.spinner("Fetching Vertex AI pricing..."):
+                        try:
+                            vertexai_pricing.fetch_and_cache()
+                            st.success("Pricing table updated.")
+                        except Exception as _e:
+                            st.error(f"Fetch failed: {_e}")
+                    st.rerun()
+            with _status_col:
+                st.caption(_cache_status)
+
+            vai_col4, vai_col5, vai_col6 = st.columns([2, 2, 2])
+
+            with vai_col4:
+                st.slider(
+                    "Refinement passes (0 = extraction only)",
+                    min_value=0,
+                    max_value=10,
+                    value=vai_cfg.refine_iterations,
+                    key="vai_refine_iterations",
                     disabled=running,
                 )
+            _prompts = _list_prompts()
+            with vai_col5:
+                _ext_default = vai_cfg.extraction_prompt
+                st.selectbox(
+                    "Extraction prompt",
+                    _prompts,
+                    index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
+                    key="vai_extraction_prompt_file",
+                    disabled=running,
+                )
+            with vai_col6:
+                if st.session_state.get("vai_refine_iterations", 0) > 0:
+                    _ref_default = vai_cfg.refinement_prompt
+                    st.selectbox(
+                        "Refinement prompt",
+                        _prompts,
+                        index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
+                        key="vai_refinement_prompt_file",
+                        disabled=running,
+                    )
+
+            if st.session_state.get("vai_refine_iterations", 0) > 0:
+                vai_col7, _, __ = st.columns([2, 2, 2])
+                with vai_col7:
+                    st.number_input(
+                        "Max errors to accept as CLEAN",
+                        min_value=-1,
+                        value=vai_cfg.clean_stop_max_errors,
+                        step=1,
+                        help=(
+                            "Early-stop threshold. Stop only if errors <= this value. "
+                            "**-1**: stop on any CLEAN. **0**: only when 0 errors remain."
+                        ),
+                        key="vai_clean_stop_max_errors",
+                        disabled=running,
+                    )
 
     if pdf_path is not None and not running:
         st.caption(f"Output will be saved to: `{pdf_path.with_suffix('.md')}`")
 
     st.divider()
 
-    # ── 3. Execute / Clean buttons ──────────────────────────────────────────
+    # ── 3. Execute button ────────────────────────────────────────────────────
     if not running:
-        _btn_col, _dry_col, _clean_col = st.columns([4, 2, 1])
-
-        with _clean_col:
-            if st.button("🧹 Clean", width="stretch", key="clean_btn",
-                         help="Clear the execution log and result."):
-                _clear_output()
-                st.rerun()
+        _btn_col, _dry_col = st.columns([4, 2])
 
         with _dry_col:
-            dry_run_check = st.checkbox(
+            st.markdown('<div style="margin-top: 0.35rem;"></div>', unsafe_allow_html=True)
+            dry_run_check = st.toggle(
                 "Dry run (estimate only)",
                 key="dry_run_check",
                 help="Count pages and estimate token cost without calling the API.",
             )
 
         _execute_clicked = _btn_col.button(
-            "⚡  Execute",
+            "Convert",
             type="primary",
             disabled=(pdf_path is None),
             width="stretch",
@@ -1092,17 +1051,21 @@ def run() -> None:
     # ── 5. Render logs ──────────────────────────────────────────────────────
     if st.session_state.ex_logs:
         import html as _html
-        log_html = _html.escape("\n".join(reversed(st.session_state.ex_logs)))
-        with st.container(key="execution_log_container"):
-            st.markdown(
-                f"""<div style="margin-bottom:1rem">
-                    <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">📋 Execution Log</div>
-                    <div style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
-                        border-radius:6px;padding:12px 16px;font-family:'SFMono-Regular',Consolas,monospace;
-                        font-size:0.78rem;line-height:1.55;white-space:pre;color:#e6edf3">{log_html}</div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
+        log_html = _html.escape("\n".join(st.session_state.ex_logs))
+        _log_id = "ex_log_box"
+        st.markdown(
+            f"""<div style="margin-bottom:1rem">
+                <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">Execution Log</div>
+                <div id="{_log_id}" style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
+                    border-radius:6px;padding:12px 16px;font-family:'SFMono-Regular',Consolas,monospace;
+                    font-size:0.78rem;line-height:1.55;white-space:pre;color:#e6edf3">{log_html}</div>
+            </div>
+            <script>
+                var el = document.getElementById("{_log_id}");
+                if (el) el.scrollTop = el.scrollHeight;
+            </script>""",
+            unsafe_allow_html=True,
+        )
 
     # ── 6. Show result ──────────────────────────────────────────────────────
     result_payload = st.session_state.ex_result
@@ -1140,26 +1103,38 @@ def run() -> None:
             if result.backend_used == "vertexai":
                 corrections_path = _save_corrections_report(result, output_path)
 
-            st.subheader("✅ Result")
+            st.subheader("Result")
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Backend", result.backend_used)
-            m2.metric("Pages", result.page_count if result.page_count is not None else "—")
-            m3.metric("Characters", f"{len(result.markdown):,}")
-            m4.metric("Tokens (est.)", f"~{result.token_estimate:,}")
+            # Summary line instead of 4 metric cards
+            _pages = result.page_count if result.page_count is not None else "?"
+            st.success(
+                f"Converted **{_pages} pages** using **{result.backend_used}** "
+                f"({len(result.markdown):,} chars, ~{result.token_estimate:,} tokens). "
+                f"Saved to `{output_path.name}`"
+            )
 
-            st.success(f"Saved → `{output_path}`")
-            if _step_paths:
-                st.info(f"Intermediate step markdown saved ({len(_step_paths)}): " +
-                        ", ".join(f"`{p.name}`" for p in _step_paths))
-            if _raw_paths:
-                st.info(f"Raw AI responses saved ({len(_raw_paths)}): " +
-                        ", ".join(f"`{p.name}`" for p in _raw_paths))
-            if _chunk_pdf_paths:
-                st.info(f"Chunk PDFs saved ({len(_chunk_pdf_paths)}): " +
-                        ", ".join(f"`{p.name}`" for p in _chunk_pdf_paths))
+            # Download button for the markdown
+            st.download_button(
+                label="Download Markdown",
+                data=result.markdown,
+                file_name=output_path.name,
+                mime="text/markdown",
+                key="download_md_btn",
+            )
+
+            if _step_paths or _raw_paths or _chunk_pdf_paths:
+                with st.expander("Saved artifacts"):
+                    if _step_paths:
+                        st.caption(f"Intermediate steps ({len(_step_paths)}): " +
+                                   ", ".join(f"`{p.name}`" for p in _step_paths))
+                    if _raw_paths:
+                        st.caption(f"Raw AI responses ({len(_raw_paths)}): " +
+                                   ", ".join(f"`{p.name}`" for p in _raw_paths))
+                    if _chunk_pdf_paths:
+                        st.caption(f"Chunk PDFs ({len(_chunk_pdf_paths)}): " +
+                                   ", ".join(f"`{p.name}`" for p in _chunk_pdf_paths))
             if corrections_path is not None:
-                st.success(f"Corrections log → `{corrections_path}`")
+                st.caption(f"Corrections log: `{corrections_path.name}`")
 
             if result.backend_used == "vertexai":
                 meta = result.metadata
@@ -1175,19 +1150,18 @@ def run() -> None:
                     model_used, total_in, total_out, _pricing_data
                 )
 
-                st.markdown("#### ☁️ Vertex AI Usage")
-                vc_model, vc1, vc2, vc3, vc4 = st.columns([4, 2, 2, 2, 2])
-                vc_model.metric("Model", model_used)
-                vc1.metric("Input tokens", f"{total_in:,}")
-                vc2.metric("Output tokens", f"{total_out:,}")
-                vc3.metric("Total tokens", f"{total_tok:,}")
-                vc4.metric("Est. cost", cost_label)
+                st.markdown("#### Vertex AI Usage")
+                st.caption(
+                    f"**Model**: {model_used} · "
+                    f"**Tokens**: {total_in:,} in / {total_out:,} out ({total_tok:,} total) · "
+                    f"**Est. cost**: {cost_label}"
+                )
 
                 track_table: list[dict] = meta.get("refinement_track_table") or []
                 chunk_summaries: list[dict] = meta.get("chunk_refine_summaries") or []
                 refinement_log: list[dict] = meta.get("refinement_log", [])
                 if track_table or refinement_log:
-                    st.markdown("#### 🔄 Refinement Track Record")
+                    st.markdown("#### Refinement Track Record")
                     if chunk_summaries and len(chunk_summaries) > 1:
                         bullets = "  \n".join(
                             f"- **Chunk {s['chunk']}** (pages {s['pages']}): "
@@ -1242,23 +1216,29 @@ def run() -> None:
                 else:
                     st.info("Extraction only — no refinement passes were run.")
 
-            with st.expander("📄 Markdown preview", expanded=True):
-                preview = result.markdown[:6000]
-                if len(result.markdown) > 6000:
-                    preview += "\n\n*… (truncated — open the file for full content)*"
-                st.markdown(preview)
+            with st.expander("Markdown preview", expanded=True):
+                st.markdown(
+                    f"""<div style="max-height:500px;overflow:auto;background:#161b22;
+                        border:1px solid #30363d;border-radius:6px;padding:16px;
+                        font-size:0.85rem;line-height:1.6;color:#e6edf3">
+                        {result.markdown[:20000]}
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                if len(result.markdown) > 20000:
+                    st.caption("Showing first 20,000 characters. Download or view raw for full content.")
 
-            with st.expander("📋 Raw Markdown (copy-ready)"):
+            with st.expander("Raw Markdown (copy-ready)"):
                 st.code(result.markdown, language="markdown")
 
             if corrections_path is not None and corrections_path.exists():
                 _corrections_text = corrections_path.read_text(encoding="utf-8")
-                with st.expander("🔍 Corrections Preview"):
+                with st.expander("Corrections Preview"):
                     st.markdown(_corrections_text)
-                with st.expander("📋 Corrections Raw (copy-ready)"):
+                with st.expander("Corrections Raw (copy-ready)"):
                     st.code(_corrections_text, language="markdown")
 
     # ── 7. Keep polling while running ────────────────────────────────────────
     if st.session_state.ex_running:
-        time.sleep(1)
+        time.sleep(0.3)
         st.rerun()
