@@ -27,11 +27,11 @@ File Input (PDF, Word, PowerPoint, Excel, Image)
 pdf-to-markdown/
 ├── .venv/                  # Virtual environment
 ├── app/
-│   ├── app.py              # Streamlit entry point (4 tabs)
-│   ├── execute.py          # ⚡ Execute tab
-│   ├── tab_batch.py        # 📂 Batch tab
-│   ├── tab_log.py          # 📊 Log Viewer tab
-│   ├── tab_settings.py     # ⚙️ Settings tab
+│   ├── app.py              # Streamlit entry point (4 tabs, sidebar globals)
+│   ├── execute.py          # Convert File tab
+│   ├── tab_batch.py        # Batch Convert tab
+│   ├── tab_log.py          # History tab
+│   ├── tab_settings.py     # Settings tab
 │   └── .streamlit/
 ├── prompts/
 │   ├── extraction.md       # Universal prompt (default): text, tables, and visuals
@@ -108,10 +108,19 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 
 | Tab | Purpose |
 |---|---|
-| ⚡ Execute | Single-file conversion with all options |
-| 📂 Batch | Folder processing with results table |
-| 📊 Log Viewer | Browse and filter `exec_log.jsonl` |
-| ⚙️ Settings | Edit `config.json` from the UI |
+| Convert File | Single-file conversion with file picker and live log |
+| Batch Convert | Folder processing with results table |
+| History | Browse and filter `exec_log.jsonl` |
+| Settings | Edit `config.json` from the UI |
+
+**UI layout:**
+
+- **Sidebar** shows available backends and holds the global **Backend** and **Auth Mode** selectors (shared across all tabs).
+- The **Convert File** and **Batch Convert** tabs show only essential options by default. Chunking, Vertex AI model/prompt, and refinement settings are behind an **Advanced options** expander.
+- Clicking **Convert** or **Run Batch** automatically clears the previous result — no manual "Clean" step needed.
+- The **Execution Log** appears below the action button in chronological order with auto-scroll.
+- Results lead with the converted markdown preview and a **Download Markdown** button.
+- **Dry run** is a toggle next to the main action button.
 
 ### CLI
 
@@ -245,13 +254,13 @@ The Vertex AI backend uses Markdown prompt files from the `prompts/` folder. Bot
 | `prompts/refinement.md` | Iterative quality audit. Used when `refine_iterations > 0`. |
 
 **Switching prompts at runtime:**
-- **UI**: Use the "Extraction prompt" and "Refinement prompt" dropdowns in the Execute or Batch tabs.
+- **UI**: Use the "Extraction prompt" and "Refinement prompt" dropdowns under **Advanced options** in the Convert File or Batch Convert tabs.
 - **CLI**: Pass `--extraction-prompt prompts/extraction_text.md` to override for a single run.
 - **Settings tab / config.json**: Change the default applied to every run.
 
 ## Configuration (`src/config.json`)
 
-All settings live in `src/config.json`. CLI flags and UI selections override these at runtime. Edit from the UI via the ⚙️ Settings tab.
+All settings live in `src/config.json`. CLI flags and UI selections override these at runtime. Edit from the UI via the **Settings** tab.
 
 ```json
 {
@@ -307,7 +316,7 @@ For large documents, set `--chunk-size N` (or `chunk_size` in config) to split i
 - `--max-chunks N` (UI: **Max chunks** field) stops after N chunks — useful for testing large documents without processing the whole file.
 - Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output.
 - Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and removed after the run (verbose mode also copies each slice to `{stem}.chunk_NNN.pdf` beside the output).
-- Starting a new **Execute** on the same file removes prior outputs for that basename first (`{stem}.*`, `{stem}_chunk_*`, and `_chunks_<stem>/`); the source PDF is never deleted. With **Verbose** on, each deleted path is logged in the execution log.
+- Starting a new **Convert** on the same file removes prior outputs for that basename first (`{stem}.*`, `{stem}_chunk_*`, and `_chunks_<stem>/`); the source PDF is never deleted. With **Verbose** on, each deleted path is logged in the execution log.
 
 ## Execution Log
 
@@ -328,7 +337,7 @@ Every run appends a row to `tmp/exec_log.jsonl` (JSONL, append-only):
 }
 ```
 
-Browse and filter the log in the **📊 Log Viewer** tab, or load in Python:
+Browse and filter the log in the **History** tab, or load in Python:
 
 ```python
 import pandas as pd
@@ -416,11 +425,9 @@ INFO  backends.vertexai: API Refinement pass 1 completed in 3.87s — model=gemi
 
 ## Verbose Mode — Intermediate File Saving
 
-When **Verbose** is enabled in the **Execute** tab, intermediate artifacts are saved next to the output Markdown file. The CLI `-v` flag only increases log verbosity; it does not write these artifacts (use the app for full verbose dumps).
+When **Verbose** is enabled in the **Convert File** tab, intermediate artifacts are saved next to the output Markdown file. The CLI `-v` flag only increases log verbosity; it does not write these artifacts (use the app for full verbose dumps).
 
-**🧹 Clean** clears the Execute tab (log and result panel) only — it does **not** delete files on disk.
-
-Starting **⚡ Execute** again on the same input removes previous outputs for that output basename first (same folder as `{name}.md`), so you do not accumulate stale steps. With Verbose on, each removed path is logged. Your original source file (e.g. `{name}.pdf`) is never deleted.
+Clicking **Convert** automatically clears the previous result and log from the UI, then removes prior outputs for that output basename before starting (same folder as `{name}.md`), so you do not accumulate stale steps. With Verbose on, each removed path is logged. Your original source file (e.g. `{name}.pdf`) is never deleted.
 
 | File | When created | Content |
 |------|-------------|---------|
