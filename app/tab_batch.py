@@ -9,9 +9,14 @@ import queue
 import sys
 import threading
 import time
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    _HAS_TKINTER = True
+except ModuleNotFoundError:
+    _HAS_TKINTER = False
 
 import streamlit as st
 
@@ -193,45 +198,57 @@ def run() -> None:
 
     running: bool = st.session_state.bt_running
 
-    st.subheader("📂 Batch Folder Processing")
+    st.subheader("Batch Folder Processing")
 
     # ── Folder & Output selection ───────────────────────────────────────────
-    fc1, fc2 = st.columns([5, 1])
-    with fc2:
-        st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("🗂️  Browse…", width="stretch", key="bt_browse_folder", disabled=running):
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            chosen = filedialog.askdirectory(title="Select input folder")
-            root.destroy()
-            if chosen:
-                st.session_state.bt_folder = chosen
-        st.markdown("</div>", unsafe_allow_html=True)
-    with fc1:
+    if _HAS_TKINTER:
+        fc1, fc2 = st.columns([5, 1])
+        _fc1 = fc1
+    else:
+        _fc1 = st.container()
+
+    if _HAS_TKINTER:
+        with fc2:
+            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+            if st.button("Browse...", width="stretch", key="bt_browse_folder", disabled=running):
+                root = tk.Tk()
+                root.withdraw()
+                root.wm_attributes("-topmost", 1)
+                chosen = filedialog.askdirectory(title="Select input folder")
+                root.destroy()
+                if chosen:
+                    st.session_state.bt_folder = chosen
+            st.markdown("</div>", unsafe_allow_html=True)
+    with _fc1:
         folder_str: str = st.text_input(
             "Input folder",
-            placeholder=r"C:\path\to\pdfs",
+            placeholder=r"/path/to/pdfs",
             key="bt_folder",
             disabled=running,
         )
 
-    oc1, oc2 = st.columns([5, 1])
-    with oc2:
-        st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("🗂️  Browse…", width="stretch", key="bt_browse_output", disabled=running):
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            chosen = filedialog.askdirectory(title="Select output folder")
-            root.destroy()
-            if chosen:
-                st.session_state.bt_output = chosen
-        st.markdown("</div>", unsafe_allow_html=True)
-    with oc1:
+    if _HAS_TKINTER:
+        oc1, oc2 = st.columns([5, 1])
+        _oc1 = oc1
+    else:
+        _oc1 = st.container()
+
+    if _HAS_TKINTER:
+        with oc2:
+            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+            if st.button("Browse...", width="stretch", key="bt_browse_output", disabled=running):
+                root = tk.Tk()
+                root.withdraw()
+                root.wm_attributes("-topmost", 1)
+                chosen = filedialog.askdirectory(title="Select output folder")
+                root.destroy()
+                if chosen:
+                    st.session_state.bt_output = chosen
+            st.markdown("</div>", unsafe_allow_html=True)
+    with _oc1:
         output_str: str = st.text_input(
             "Output folder",
-            placeholder=r"C:\path\to\output",
+            placeholder=r"/path/to/output",
             key="bt_output",
             disabled=running,
         )
@@ -239,47 +256,15 @@ def run() -> None:
     st.divider()
 
     # ── Options ─────────────────────────────────────────────────────────────
-    st.subheader("⚙️ Options")
+    # Auth mode is set in the sidebar (shared across tabs)
+    auth_mode: str = st.session_state.get("global_auth_mode", vai.auth_mode)
 
-    col_auth, col_chunk, col_overlap, col_rec, col_verbose = st.columns([2, 2, 2, 1, 1])
-
-    with col_auth:
-        auth_idx = 0 if vai.auth_mode == "api" else 1
-        auth_mode: str = st.selectbox(
-            "Auth Mode",
-            ["api", "gcloud"],
-            index=auth_idx,
-            key="bt_auth_mode",
-            help="**api**: GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
-            disabled=running,
-        )
-
-    with col_chunk:
-        chunk_size: int = st.number_input(
-            "Chunk size (pages, 0 = off)",
-            min_value=0,
-            value=proc.chunk_size,
-            step=5,
-            key="bt_chunk_size_input",
-            disabled=running,
-        )
-
-    with col_overlap:
-        chunk_overlap: int = st.number_input(
-            "Chunk overlap (pages)",
-            min_value=0,
-            value=proc.chunk_overlap,
-            step=1,
-            key="bt_chunk_overlap_input",
-            disabled=running,
-        )
+    col_rec, col_verbose = st.columns([1, 1])
 
     with col_rec:
-        st.markdown('<div style="margin-top:2.3rem"></div>', unsafe_allow_html=True)
         recursive: bool = st.checkbox("Recursive", value=cfg.batch.recursive, key="bt_recursive_check", disabled=running)
 
     with col_verbose:
-        st.markdown('<div style="margin-top:2.3rem"></div>', unsafe_allow_html=True)
         verbose: bool = st.checkbox("Verbose", key="bt_verbose_check", disabled=running)
 
     # ── File type selection ─────────────────────────────────────────────────
@@ -296,62 +281,79 @@ def run() -> None:
     if not selected_extensions:
         selected_extensions = [".pdf"]
 
-    # ── Vertex AI options ───────────────────────────────────────────────────
-    st.markdown("##### ☁️ Vertex AI Configuration")
-    vb1, vb2, vb3 = st.columns([2, 2, 2])
-    with vb1:
-        bt_project_id: str = st.text_input(
-            "Project ID", value=vai.project_id or os.getenv("PROJECT_ID", ""),
-            key="bt_project_id", disabled=running,
-        )
-    with vb2:
-        bt_location: str = st.text_input(
-            "Location", value=vai.location, key="bt_location", disabled=running,
-        )
-    with vb3:
-        _env_model = os.getenv("MODEL_ID", vai.model)
-        _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
-        bt_model: str = st.selectbox(
-            "Model", _VAI_MODELS, index=_model_idx, key="bt_model_id", disabled=running,
-        )
-
-    vb4, vb5, vb6 = st.columns([2, 2, 2])
-    with vb4:
-        bt_refine: int = st.slider(
-            "Refinement passes", 0, 10, vai.refine_iterations,
-            key="bt_refine_iterations", disabled=running,
-        )
-    _prompts = _list_prompts()
-    with vb5:
-        _ext_default = vai.extraction_prompt
-        bt_extract_prompt: str = st.selectbox(
-            "Extraction prompt", _prompts,
-            index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
-            key="bt_extraction_prompt", disabled=running,
-        )
-    with vb6:
-        if st.session_state.get("bt_refine_iterations", 0) > 0:
-            _ref_default = vai.refinement_prompt
-            bt_refine_prompt: str = st.selectbox(
-                "Refinement prompt", _prompts,
-                index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
-                key="bt_refinement_prompt", disabled=running,
+    # ── Advanced options ────────────────────────────────────────────────────
+    with st.expander("Advanced options", expanded=False):
+        st.markdown("##### Chunking")
+        col_chunk, col_overlap = st.columns([2, 2])
+        with col_chunk:
+            chunk_size: int = st.number_input(
+                "Chunk size (pages, 0 = off)",
+                min_value=0,
+                value=proc.chunk_size,
+                step=5,
+                key="bt_chunk_size_input",
+                disabled=running,
             )
+        with col_overlap:
+            chunk_overlap: int = st.number_input(
+                "Chunk overlap (pages)",
+                min_value=0,
+                value=proc.chunk_overlap,
+                step=1,
+                key="bt_chunk_overlap_input",
+                disabled=running,
+            )
+
+        st.markdown("##### Vertex AI Configuration")
+        vb1, vb2, vb3 = st.columns([2, 2, 2])
+        with vb1:
+            bt_project_id: str = st.text_input(
+                "Project ID", value=vai.project_id or os.getenv("PROJECT_ID", ""),
+                key="bt_project_id", disabled=running,
+            )
+        with vb2:
+            bt_location: str = st.text_input(
+                "Location", value=vai.location, key="bt_location", disabled=running,
+            )
+        with vb3:
+            _env_model = os.getenv("MODEL_ID", vai.model)
+            _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
+            bt_model: str = st.selectbox(
+                "Model", _VAI_MODELS, index=_model_idx, key="bt_model_id", disabled=running,
+            )
+
+        vb4, vb5, vb6 = st.columns([2, 2, 2])
+        with vb4:
+            bt_refine: int = st.slider(
+                "Refinement passes", 0, 10, vai.refine_iterations,
+                key="bt_refine_iterations", disabled=running,
+            )
+        _prompts = _list_prompts()
+        with vb5:
+            _ext_default = vai.extraction_prompt
+            bt_extract_prompt: str = st.selectbox(
+                "Extraction prompt", _prompts,
+                index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
+                key="bt_extraction_prompt", disabled=running,
+            )
+        with vb6:
+            if st.session_state.get("bt_refine_iterations", 0) > 0:
+                _ref_default = vai.refinement_prompt
+                bt_refine_prompt: str = st.selectbox(
+                    "Refinement prompt", _prompts,
+                    index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
+                    key="bt_refinement_prompt", disabled=running,
+                )
 
     st.divider()
 
     # ── Execute buttons ─────────────────────────────────────────────────────
     if not running:
-        btn_col, dry_col, clean_col = st.columns([4, 2, 1])
-
-        with clean_col:
-            if st.button("🧹 Clean", width="stretch", key="bt_clean_btn"):
-                st.session_state.bt_logs = []
-                st.session_state.bt_result = None
-                st.rerun()
+        btn_col, dry_col = st.columns([4, 2])
 
         with dry_col:
-            bt_dry_run = st.checkbox(
+            st.markdown('<div style="margin-top: 0.35rem;"></div>', unsafe_allow_html=True)
+            bt_dry_run = st.toggle(
                 "Dry run (estimate only)", key="bt_dry_run_check",
                 help="No API calls — estimates token counts only.",
             )
@@ -360,7 +362,7 @@ def run() -> None:
         output_valid = bool(output_str.strip())
 
         bt_clicked = btn_col.button(
-            "📂  Run Batch",
+            "Run Batch",
             type="primary",
             width="stretch",
             key="bt_execute_btn",
@@ -438,14 +440,19 @@ def run() -> None:
 
     # ── Render logs ─────────────────────────────────────────────────────────
     if st.session_state.bt_logs:
-        log_html = _html.escape("\n".join(reversed(st.session_state.bt_logs)))
+        log_html = _html.escape("\n".join(st.session_state.bt_logs))
+        _log_id = "bt_log_box"
         st.markdown(
             f"""<div style="margin-bottom:1rem">
-                <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">📋 Execution Log</div>
-                <div style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
+                <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">Execution Log</div>
+                <div id="{_log_id}" style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
                     border-radius:6px;padding:12px 16px;font-family:'SFMono-Regular',Consolas,monospace;
                     font-size:0.78rem;line-height:1.55;white-space:pre;color:#e6edf3">{log_html}</div>
-            </div>""",
+            </div>
+            <script>
+                var el = document.getElementById("{_log_id}");
+                if (el) el.scrollTop = el.scrollHeight;
+            </script>""",
             unsafe_allow_html=True,
         )
 
@@ -460,9 +467,9 @@ def run() -> None:
         else:
             results: list[ChunkResult] = payload
 
-            st.subheader("✅ Batch Results")
+            st.subheader("Batch Results")
 
-            # Summary metrics
+            # Summary
             total_in = sum(r.metadata.get("total_input_tokens", 0) for r in results)
             total_out = sum(r.metadata.get("total_output_tokens", 0) for r in results)
             total_tok = total_in + total_out
@@ -472,19 +479,15 @@ def run() -> None:
 
             from src import vertexai_pricing
             pricing_data = vertexai_pricing.load_pricing()
-            # Use the most common model for summary cost estimate
             model_for_cost = next(iter(models_used), "gemini-2.5-pro")
             cost_label, _ = vertexai_pricing.calculate_cost(model_for_cost, total_in, total_out, pricing_data)
 
-            sm1, sm2, sm3, sm4, sm5, sm6 = st.columns(6)
-            sm1.metric("Files", len(files))
-            sm2.metric("Chunks/Results", len(results))
-            sm3.metric("Failed", failed)
-            sm4.metric("Input tokens", f"{total_in:,}")
-            sm5.metric("Output tokens", f"{total_out:,}")
-            sm6.metric("Est. cost", cost_label)
-
-            st.caption(f"Model: {', '.join(models_used) or '—'}")
+            _fail_text = f" ({failed} failed)" if failed else ""
+            st.success(
+                f"Processed **{len(files)} files** ({len(results)} results{_fail_text}). "
+                f"Tokens: {total_tok:,} total. Est. cost: {cost_label}. "
+                f"Model: {', '.join(models_used) or 'N/A'}"
+            )
 
             # Per-result table
             table_rows = []
@@ -506,5 +509,5 @@ def run() -> None:
 
     # ── Keep polling ────────────────────────────────────────────────────────
     if st.session_state.bt_running:
-        time.sleep(1)
+        time.sleep(0.3)
         st.rerun()

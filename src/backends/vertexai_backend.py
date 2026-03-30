@@ -76,6 +76,10 @@ _REFINEMENT_SCHEMA: dict = {
 _VALID_SINGLE_ESCAPES: frozenset[str] = frozenset('"\\/nt')
 _HEX_CHARS: frozenset[str] = frozenset('0123456789abcdefABCDEF')
 
+# Regex to strip trailing commas before a closing bracket/brace (invalid JSON but
+# produced by some LLMs, especially when a response is cut off mid-structure).
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+
 
 def _project_root() -> Path:
     """Return the project root (3 levels up from this file: src/backends/vertexai_backend.py)."""
@@ -167,6 +171,65 @@ def _repair_json_escapes(text: str) -> str:
     return ''.join(out)
 
 
+def _remove_trailing_commas(text: str) -> str:
+    """Strip trailing commas before `}` or `]` — invalid JSON but a common LLM output artifact."""
+    return _TRAILING_COMMA_RE.sub(r"\1", text)
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """Close a JSON document that was truncated mid-string or mid-structure.
+
+    This handles responses where the LLM hit the token limit and the JSON output
+    ends abruptly inside a string value or inside an unclosed array / object.
+
+    Walks the text tracking nesting depth and open-string state, then appends
+    the minimum closing characters needed to produce syntactically valid JSON.
+    Returns the candidate repaired string, or ``None`` if the JSON is already
+    balanced (i.e. no truncation was detected).
+    """
+    i = 0
+    n = len(text)
+    stack: list[str] = []  # unmatched '{' or '['
+    in_string = False
+
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                i += 2  # skip the escaped character
+                continue
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+        i += 1
+
+    if not in_string and not stack:
+        return None  # already balanced
+
+    closing = '"' if in_string else ""
+    for opener in reversed(stack):
+        closing += "}" if opener == "{" else "]"
+    return text + closing
+
+
+def _save_raw_response(pdf_path: Path, iteration: int, raw_text: str) -> None:
+    """Persist a raw LLM response to the tmp/ directory for post-mortem debugging."""
+    raw_dir = _project_root() / "tmp"
+    raw_dir.mkdir(exist_ok=True)
+    timestamp = int(time.time())
+    filename = f"refinement_raw_{pdf_path.stem}_iter{iteration}_{timestamp}.txt"
+    dest = raw_dir / filename
+    dest.write_text(raw_text, encoding="utf-8")
+    logger.warning("⚠️ Raw LLM response saved for debug: %s", dest)
+
+
 def _parse_refinement_response(text: str) -> dict:
     """Parse the JSON response from a refinement step.
 
@@ -196,6 +259,22 @@ def _parse_refinement_response(text: str) -> dict:
                 return parsed
             raise json.JSONDecodeError("Expected a JSON object, got a list or scalar", repaired, 0)
         except json.JSONDecodeError as exc:
+            # Attempt 3: strip trailing commas (e.g. "value",} from truncated objects)
+            no_trailing = _remove_trailing_commas(repaired)
+            try:
+                return json.loads(no_trailing)
+            except json.JSONDecodeError:
+                pass
+
+            # Attempt 4: close open strings / structures (LLM hit token limit)
+            closed = _repair_truncated_json(no_trailing)
+            if closed is not None:
+                try:
+                    return json.loads(_remove_trailing_commas(closed))
+                except json.JSONDecodeError:
+                    pass
+
+            # All repairs failed — log and fall through to the error placeholder
             pos = exc.pos or 0
             snippet = repaired[max(0, pos - 30): pos + 30].replace("\n", "↵")
             logger.warning("⚠️ Failed to parse JSON refinement response: %s | near: %r", exc, snippet)
@@ -533,6 +612,8 @@ class VertexAIBackend(BaseBackend):
 
             parsed = _parse_refinement_response(ref_response.text or "")
             summary = parsed.get("iteration_summary", {})
+            if str(summary.get("verdict")) == "PARSE_ERROR":
+                _save_raw_response(pdf_path, i, ref_response.text or "")
             corrections = parsed.get("corrections", [])
             corrected_markdown = parsed.get("corrected_markdown", current_markdown)
 

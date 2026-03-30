@@ -11,7 +11,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 
 def run() -> None:
     """Render the Log Viewer tab."""
-    st.subheader("📊 Execution Log Viewer")
+    st.subheader("Execution Log Viewer")
 
     from src.logger_exec import load_log
 
@@ -21,21 +21,17 @@ def run() -> None:
         st.info("No execution log entries yet. Run a conversion to populate the log.")
         return
 
-    # ── Summary (extraction rows only for token totals — refinement tokens overlap) ─
+    # ── Summary ────────────────────────────────────────────────────────────
     extraction_rows = [r for r in rows if r.get("step_type") == "extraction"]
     refinement_rows = [r for r in rows if r.get("step_type") == "refinement"]
-
-    total_in = sum(r.get("input_tokens", 0) for r in rows)
-    total_out = sum(r.get("output_tokens", 0) for r in rows)
     files = {r.get("file", "") for r in rows}
     failed = sum(1 for r in rows if r.get("error"))
 
-    lv1, lv2, lv3, lv4, lv5 = st.columns(5)
-    lv1.metric("Total log rows", len(rows))
-    lv2.metric("Unique files", len(files))
-    lv3.metric("Extraction calls", len(extraction_rows))
-    lv4.metric("Refinement calls", len(refinement_rows))
-    lv5.metric("Failed", failed)
+    st.caption(
+        f"**{len(rows)}** log entries · **{len(files)}** files · "
+        f"**{len(extraction_rows)}** extractions · **{len(refinement_rows)}** refinements"
+        + (f" · **{failed}** failed" if failed else "")
+    )
 
     st.divider()
 
@@ -96,12 +92,28 @@ def run() -> None:
 
     # ── Clear log ────────────────────────────────────────────────────────────
     st.divider()
-    if st.button("🗑️ Clear log", key="lv_clear_btn",
-                 help="Delete all entries from exec_log.jsonl. Irreversible."):
-        from src.config import load_settings
-        cfg = load_settings()
-        log_path = _PROJECT_ROOT / cfg.logging.exec_log_dir / cfg.logging.exec_log_file
-        if log_path.exists():
-            log_path.unlink()
-        st.success("Log cleared.")
-        st.rerun()
+    if "lv_confirm_clear" not in st.session_state:
+        st.session_state.lv_confirm_clear = False
+
+    if not st.session_state.lv_confirm_clear:
+        if st.button("Clear log", key="lv_clear_btn",
+                     help="Delete all entries from exec_log.jsonl. Irreversible."):
+            st.session_state.lv_confirm_clear = True
+            st.rerun()
+    else:
+        st.warning("This will permanently delete all log entries. Are you sure?")
+        col_yes, col_no = st.columns([1, 1])
+        with col_yes:
+            if st.button("Yes, delete", key="lv_confirm_yes", type="primary"):
+                from src.config import load_settings
+                cfg = load_settings()
+                log_path = _PROJECT_ROOT / cfg.logging.exec_log_dir / cfg.logging.exec_log_file
+                if log_path.exists():
+                    log_path.unlink()
+                st.session_state.lv_confirm_clear = False
+                st.success("Log cleared.")
+                st.rerun()
+        with col_no:
+            if st.button("Cancel", key="lv_confirm_no"):
+                st.session_state.lv_confirm_clear = False
+                st.rerun()

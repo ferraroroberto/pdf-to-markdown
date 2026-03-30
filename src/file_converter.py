@@ -1,22 +1,25 @@
 """Pre-processing: convert Office documents and images to PDF before extraction.
 
 Only used for the Vertex AI backend.
-- Word / PowerPoint / other Office formats → Microsoft Office COM (pywin32) → PDF
+- Word / PowerPoint / other Office formats → Microsoft Office COM (pywin32) on Windows,
+  or docling + PyMuPDF on Unix/Linux → PDF
 - Images (JPEG, PNG, BMP, TIFF, WebP, GIF) → PyMuPDF → single-page PDF
 """
 
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
 import tempfile
+import textwrap
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
 logger = logging.getLogger("file_converter")
 
-# File types handled by LibreOffice
+# File types handled by Office converters
 OFFICE_EXTENSIONS: frozenset[str] = frozenset({
     ".docx", ".doc", ".odt", ".rtf",       # Word
     ".pptx", ".ppt", ".odp",               # PowerPoint
@@ -90,18 +93,26 @@ def ensure_pdf(source: Path) -> Generator[Path, None, None]:
 
 
 def _office_to_pdf(source: Path, output_dir: Path) -> Path:
-    """Convert an Office document to PDF using Microsoft Office COM automation.
+    """Convert an Office document to PDF.
 
-    Requires pywin32 (pip install pywin32) and Microsoft Office to be installed.
+    On Windows: uses Microsoft Office COM automation (requires pywin32 + MS Office).
+    On Unix/Linux: uses docling to parse content, then renders to PDF via PyMuPDF.
     Works for Word (.doc/.docx/.rtf/.odt), Excel (.xls/.xlsx/.ods),
     and PowerPoint (.ppt/.pptx/.odp).
     """
+    if platform.system() == "Windows":
+        return _office_to_pdf_windows(source, output_dir)
+    return _office_to_pdf_docling(source, output_dir)
+
+
+def _office_to_pdf_windows(source: Path, output_dir: Path) -> Path:
+    """Windows path: Office COM automation via pywin32."""
     try:
         import pythoncom
         import win32com.client
     except ImportError:
         raise RuntimeError(
-            "pywin32 is required for Office-to-PDF conversion. "
+            "pywin32 is required for Office-to-PDF conversion on Windows. "
             "Install it with: pip install pywin32"
         )
 
@@ -110,7 +121,7 @@ def _office_to_pdf(source: Path, output_dir: Path) -> Path:
     abs_source = str(source.resolve())
     abs_pdf = str(pdf_path.resolve())
 
-    logger.info("Converting %s to PDF via Microsoft Office COM…", source.name)
+    logger.info("ℹ️ Converting %s to PDF via Microsoft Office COM…", source.name)
 
     # COM must be initialized on the calling thread (e.g. Streamlit worker threads).
     # Without this, Dispatch can fail with CO_E_NOTINITIALIZED on later runs.
@@ -123,7 +134,9 @@ def _office_to_pdf(source: Path, output_dir: Path) -> Path:
         elif suffix in {".ppt", ".pptx", ".odp"}:
             _powerpoint_to_pdf(win32com.client, abs_source, abs_pdf)
         else:
-            raise ValueError(f"Unsupported Office format: {suffix!r}")
+            raise ValueError(
+                f"Unsupported Office extension for COM conversion: {suffix}"
+            )
 
         if not pdf_path.exists():
             raise FileNotFoundError(
@@ -131,12 +144,70 @@ def _office_to_pdf(source: Path, output_dir: Path) -> Path:
             )
 
         logger.info(
-            "Converted %s → %s (%.1f KB)",
+            "ℹ️ Converted %s → %s (%.1f KB)",
             source.name, pdf_path.name, pdf_path.stat().st_size / 1024,
         )
         return pdf_path
     finally:
         pythoncom.CoUninitialize()
+
+
+def _office_to_pdf_docling(source: Path, output_dir: Path) -> Path:
+    """Unix/Linux path: parse Office file with docling, render content to PDF via PyMuPDF.
+
+    docling (already a project dependency) handles DOCX/PPTX/XLSX natively without
+    requiring any system-level Office suite.  The parsed content is exported as
+    Markdown and then laid out into a PDF using fitz (pymupdf).
+    """
+    try:
+        from docling.document_converter import DocumentConverter
+    except ImportError:
+        raise RuntimeError(
+            "docling is required for Office-to-PDF conversion on Linux. "
+            "Install it with: pip install docling"
+        )
+
+    import fitz  # pymupdf
+
+    PAGE_W, PAGE_H = 595, 842  # A4
+    MARGIN = 50
+    FS = 9
+    LINE_H = FS * 1.5
+    WRAP_WIDTH = 95  # characters per line (approx for base-14 Helvetica at 9pt)
+
+    logger.info("ℹ️ Converting %s to PDF via docling + PyMuPDF…", source.name)
+
+    converter = DocumentConverter()
+    content = converter.convert(str(source.resolve())).document.export_to_markdown()
+
+    # Word-wrap each source line so text stays within the page margins
+    physical_lines: list[str] = []
+    for line in content.splitlines():
+        if not line.strip():
+            physical_lines.append("")
+        else:
+            physical_lines.extend(textwrap.wrap(line, WRAP_WIDTH) or [""])
+
+    pdf_path = output_dir / (source.stem + ".pdf")
+    doc = fitz.open()
+    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    y = MARGIN + FS
+
+    for line in physical_lines:
+        if y + LINE_H > PAGE_H - MARGIN:
+            page = doc.new_page(width=PAGE_W, height=PAGE_H)
+            y = MARGIN + FS
+        page.insert_text((MARGIN, y), line, fontsize=FS)
+        y += LINE_H
+
+    doc.save(str(pdf_path))
+    doc.close()
+
+    logger.info(
+        "ℹ️ Converted %s → %s (%.1f KB)",
+        source.name, pdf_path.name, pdf_path.stat().st_size / 1024,
+    )
+    return pdf_path
 
 
 def _word_to_pdf(com, source: str, pdf_path: str) -> None:
