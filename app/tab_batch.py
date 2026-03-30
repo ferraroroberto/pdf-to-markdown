@@ -9,9 +9,14 @@ import queue
 import sys
 import threading
 import time
-import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    _HAS_TKINTER = True
+except ModuleNotFoundError:
+    _HAS_TKINTER = False
 
 import streamlit as st
 
@@ -196,42 +201,54 @@ def run() -> None:
     st.subheader("Batch Folder Processing")
 
     # ── Folder & Output selection ───────────────────────────────────────────
-    fc1, fc2 = st.columns([5, 1])
-    with fc2:
-        st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("Browse...", width="stretch", key="bt_browse_folder", disabled=running):
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            chosen = filedialog.askdirectory(title="Select input folder")
-            root.destroy()
-            if chosen:
-                st.session_state.bt_folder = chosen
-        st.markdown("</div>", unsafe_allow_html=True)
-    with fc1:
+    if _HAS_TKINTER:
+        fc1, fc2 = st.columns([5, 1])
+        _fc1 = fc1
+    else:
+        _fc1 = st.container()
+
+    if _HAS_TKINTER:
+        with fc2:
+            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+            if st.button("Browse...", width="stretch", key="bt_browse_folder", disabled=running):
+                root = tk.Tk()
+                root.withdraw()
+                root.wm_attributes("-topmost", 1)
+                chosen = filedialog.askdirectory(title="Select input folder")
+                root.destroy()
+                if chosen:
+                    st.session_state.bt_folder = chosen
+            st.markdown("</div>", unsafe_allow_html=True)
+    with _fc1:
         folder_str: str = st.text_input(
             "Input folder",
-            placeholder=r"C:\path\to\pdfs",
+            placeholder=r"/path/to/pdfs",
             key="bt_folder",
             disabled=running,
         )
 
-    oc1, oc2 = st.columns([5, 1])
-    with oc2:
-        st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("Browse...", width="stretch", key="bt_browse_output", disabled=running):
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            chosen = filedialog.askdirectory(title="Select output folder")
-            root.destroy()
-            if chosen:
-                st.session_state.bt_output = chosen
-        st.markdown("</div>", unsafe_allow_html=True)
-    with oc1:
+    if _HAS_TKINTER:
+        oc1, oc2 = st.columns([5, 1])
+        _oc1 = oc1
+    else:
+        _oc1 = st.container()
+
+    if _HAS_TKINTER:
+        with oc2:
+            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+            if st.button("Browse...", width="stretch", key="bt_browse_output", disabled=running):
+                root = tk.Tk()
+                root.withdraw()
+                root.wm_attributes("-topmost", 1)
+                chosen = filedialog.askdirectory(title="Select output folder")
+                root.destroy()
+                if chosen:
+                    st.session_state.bt_output = chosen
+            st.markdown("</div>", unsafe_allow_html=True)
+    with _oc1:
         output_str: str = st.text_input(
             "Output folder",
-            placeholder=r"C:\path\to\output",
+            placeholder=r"/path/to/output",
             key="bt_output",
             disabled=running,
         )

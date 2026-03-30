@@ -10,8 +10,12 @@ import queue
 import sys
 import time
 import threading
-import tkinter as tk
-from tkinter import filedialog
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    _HAS_TKINTER = True
+except ModuleNotFoundError:
+    _HAS_TKINTER = False
 from pathlib import Path
 
 import streamlit as st
@@ -727,35 +731,41 @@ def run() -> None:
     # ── 1. File selection ───────────────────────────────────────────────────
     st.subheader("Select File")
 
-    col_input, col_browse = st.columns([5, 1])
+    if _HAS_TKINTER:
+        col_input, col_browse = st.columns([5, 1])
+        _col_input = col_input
+    else:
+        _col_input = st.container()
 
-    with col_browse:
-        st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-        if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
-            root = tk.Tk()
-            root.withdraw()
-            root.wm_attributes("-topmost", 1)
-            chosen = filedialog.askopenfilename(
-                title="Select a file",
-                filetypes=[
-                    ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
-                    ("PDF files", "*.pdf"),
-                    ("Word documents", "*.docx *.doc"),
-                    ("PowerPoint presentations", "*.pptx *.ppt"),
-                    ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
-                    ("All files", "*.*"),
-                ],
-            )
-            root.destroy()
-            if chosen:
-                st.session_state.file_path_input = chosen
-        st.markdown("</div>", unsafe_allow_html=True)
+    if _HAS_TKINTER:
+        with col_browse:
+            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+            if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
+                root = tk.Tk()
+                root.withdraw()
+                root.wm_attributes("-topmost", 1)
+                chosen = filedialog.askopenfilename(
+                    title="Select a file",
+                    filetypes=[
+                        ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                        ("PDF files", "*.pdf"),
+                        ("Word documents", "*.docx *.doc"),
+                        ("PowerPoint presentations", "*.pptx *.ppt"),
+                        ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                        ("All files", "*.*"),
+                    ],
+                )
+                root.destroy()
+                if chosen:
+                    st.session_state.file_path_input = chosen
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    with col_input:
+    with _col_input:
         file_path_str = st.text_input(
             "File path",
-            placeholder=r"C:\path\to\document.pdf",
-            help="Paste the full local path to a PDF, Word, PowerPoint, or image file, or use Browse to pick one.",
+            placeholder=r"/path/to/document.pdf",
+            help="Paste the full local path to a PDF, Word, PowerPoint, or image file."
+            + (" Use Browse to pick one." if _HAS_TKINTER else ""),
             key="file_path_input",
             disabled=running,
         )
