@@ -21,7 +21,7 @@ def _list_prompts() -> list[str]:
 
 def run() -> None:
     """Render the Settings tab."""
-    st.subheader("⚙️ Settings")
+    st.subheader("Settings")
     st.caption(
         "All values are read from `src/config.json`. "
         "Changes here take effect on the next execution. "
@@ -35,7 +35,7 @@ def run() -> None:
     log = cfg.logging
 
     with st.form("settings_form"):
-        st.markdown("#### ☁️ Vertex AI")
+        st.markdown("#### Vertex AI")
         s1, s2, s3 = st.columns([2, 2, 2])
         with s1:
             new_project_id = st.text_input("Default Project ID", value=vai.project_id,
@@ -70,7 +70,7 @@ def run() -> None:
             )
 
         st.markdown("---")
-        st.markdown("#### 🔧 Processing")
+        st.markdown("#### Processing")
         p1, p2, p3, p4 = st.columns([2, 2, 2, 2])
         with p1:
             new_backend: str = st.selectbox(
@@ -88,7 +88,7 @@ def run() -> None:
         new_validate = st.checkbox("Validate after convert by default", value=proc.validate_after_convert)
 
         st.markdown("---")
-        st.markdown("#### 📂 Batch")
+        st.markdown("#### Batch")
         b1, b2 = st.columns([2, 4])
         with b1:
             new_recursive = st.checkbox("Recursive folder scan", value=batch.recursive)
@@ -100,7 +100,7 @@ def run() -> None:
             )
 
         st.markdown("---")
-        st.markdown("#### 📊 Logging")
+        st.markdown("#### Logging")
         st.caption("Execution log (structured JSONL) paths.")
         l1, l2 = st.columns([2, 4])
         with l1:
