@@ -1,7 +1,6 @@
 """PDF to Markdown conversion — clean, structured output for LLMs."""
 
 from src.auth import build_client
-from src.backends import get_backend, get_best_available, list_available
 from src.batch import run_batch
 from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.classifier import PDFInfo, classify_pdf
@@ -11,6 +10,7 @@ from src.models import BatchResult, ChunkResult, ConversionResult, ValidationRep
 from src.pipeline import Pipeline
 from src.postprocess import postprocess
 from src.validation import validate
+from src.vertexai_backend import VertexAIBackend
 
 __version__ = "0.2.0"
 
@@ -34,8 +34,6 @@ __all__ = [
     "classify_pdf",
     "validate",
     "postprocess",
-    "list_available",
-    "get_backend",
-    "get_best_available",
+    "VertexAIBackend",
     "__version__",
 ]

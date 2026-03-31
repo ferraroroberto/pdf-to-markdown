@@ -7,7 +7,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from src.backends import get_backend, get_best_available
+from src.vertexai_backend import VertexAIBackend
 from src.classifier import classify_pdf
 from src.models import ConversionResult
 from src.postprocess import postprocess
@@ -29,11 +29,9 @@ class Pipeline:
         self._backend_name = backend
         self._postprocess_options = postprocess_options or {}
 
-        # Eagerly validate a forced backend name
-        if backend is not None:
-            known = ["marker", "pdfplumber", "vertexai"]
-            if backend not in known:
-                raise ValueError(f"Unknown backend '{backend}'. Choose from {known}")
+        # VertexAI is the only backend; validate if an explicit name was given
+        if backend is not None and backend != "vertexai":
+            raise ValueError(f"Unknown backend '{backend}'. Only 'vertexai' is available.")
 
     def convert(
         self,
@@ -69,11 +67,7 @@ class Pipeline:
                     f"Unsupported file type: {pdf_path.suffix!r}. "
                     f"Supported: .pdf + {sorted(SUPPORTED_EXTENSIONS)}"
                 )
-            if self._backend_name not in (None, "vertexai"):
-                raise ValueError(
-                    f"File type '{pdf_path.suffix}' is only supported with the "
-                    f"Vertex AI backend. Current backend: '{self._backend_name}'"
-                )
+            pass  # VertexAI handles all supported file types
 
         original_source = pdf_path
 
@@ -97,17 +91,8 @@ class Pipeline:
                 pdf_info.avg_chars_per_page,
             )
 
-            # Select backend
-            if self._backend_name:
-                backend = get_backend(self._backend_name)
-            else:
-                backend = get_best_available(needs_ocr=pdf_info.is_scanned)
-
-            if pdf_info.is_scanned and not backend.supports_scanned():
-                logger.warning(
-                    "Backend '%s' does not support scanned PDFs — results may be poor",
-                    backend.name,
-                )
+            # Select backend — VertexAI is the only backend
+            backend = VertexAIBackend()
 
             logger.info("Using backend: %s", backend.name)
 
