@@ -7,6 +7,7 @@ import itertools
 import logging
 import os
 import queue
+import re
 import sys
 import time
 import threading
@@ -496,13 +497,22 @@ def _aggregate_chunked_vertex_metadata(
     track_table: list[dict] = []
     merged_corrections: list[dict] = []
     chunk_summaries: list[dict] = []
+    unique_pages: set[int] = set()
+    fallback_page_count = 0
 
     for chunk_idx, pages, meta in chunk_metas:
         ci = chunk_idx + 1
         total_in += int(meta.get("total_input_tokens", 0) or 0)
         total_out += int(meta.get("total_output_tokens", 0) or 0)
         total_tok += int(meta.get("total_tokens", 0) or 0)
+        fallback_page_count += int(meta.get("page_count", 0) or 0)
         track_table.extend(_build_refinement_track_table(meta, ci, pages))
+        m = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*", str(pages))
+        if m:
+            start = int(m.group(1))
+            end = int(m.group(2))
+            if end >= start:
+                unique_pages.update(range(start, end + 1))
         for c in meta.get("all_corrections", []):
             cc = dict(c)
             cc["chunk_index"] = ci
@@ -525,6 +535,7 @@ def _aggregate_chunked_vertex_metadata(
         )
     )
     refinement_passes_total = sum(s["iterations_completed"] for s in chunk_summaries)
+    total_pages = len(unique_pages) if unique_pages else fallback_page_count
     by_chunk_txt = "; ".join(
         f"Chunk {s['chunk']} ({s['pages']}): {s['final_verdict']}"
         for s in chunk_summaries
@@ -539,6 +550,7 @@ def _aggregate_chunked_vertex_metadata(
         "total_input_tokens": total_in,
         "total_output_tokens": total_out,
         "total_tokens": total_tok,
+        "page_count": total_pages if total_pages > 0 else None,
         "iterations_completed": refinement_passes_total,
         "final_verdict": overall,
         "final_verdict_by_chunk": verdicts,
