@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -11,7 +10,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from src.backends import BACKEND_REGISTRY, list_available
+from src.vertexai_backend import VertexAIBackend
 from src.config import load_settings
 from src.logging_config import setup_logging
 from src.models import ConversionResult
@@ -30,10 +29,6 @@ def main() -> None:
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option("-o", "--output", "output_path", type=click.Path(), default=None,
               help="Output file or directory.")
-@click.option("-b", "--backend",
-              type=click.Choice(["marker", "pdfplumber", "vertexai"]),
-              default=None,
-              help="Extraction backend. Default: from config.json.")
 @click.option("--auth-mode",
               type=click.Choice(["api", "gcloud"]),
               default=None,
@@ -68,7 +63,6 @@ def main() -> None:
 def convert(
     input_path: str,
     output_path: str | None,
-    backend: str | None,
     auth_mode: str | None,
     project_id: str | None,
     location: str | None,
@@ -98,8 +92,6 @@ def convert(
         vai_overrides["auth_mode"] = auth_mode
     if project_id is not None:
         vai_overrides["project_id"] = project_id
-    elif os.getenv("PROJECT_ID"):
-        vai_overrides["project_id"] = os.environ["PROJECT_ID"]
     if location is not None:
         vai_overrides["location"] = location
     if model is not None:
@@ -110,8 +102,6 @@ def convert(
         vai_overrides["extraction_prompt"] = extraction_prompt
     if refinement_prompt is not None:
         vai_overrides["refinement_prompt"] = refinement_prompt
-    if backend is not None:
-        proc_overrides["backend"] = backend
     if chunk_size is not None:
         proc_overrides["chunk_size"] = chunk_size
     if chunk_overlap is not None:
@@ -275,17 +265,13 @@ def validate(pdf_path: str, markdown_path: str) -> None:
 @main.command()
 def backends() -> None:
     """List available extraction backends."""
-    available = set(list_available())
     table = Table(title="Backends")
     table.add_column("Backend", style="cyan")
     table.add_column("Status")
     table.add_column("Scanned PDF Support")
 
-    for cls in BACKEND_REGISTRY:
-        name = cls.name
-        status = "[green]Available[/green]" if name in available else "[red]Not installed[/red]"
-        scanned = "Yes" if cls().supports_scanned() else "No"
-        table.add_row(name, status, scanned)
+    status = "[green]Available[/green]" if VertexAIBackend.is_available() else "[red]Not installed[/red]"
+    table.add_row("vertexai", status, "Yes")
 
     console.print(table)
 
@@ -299,7 +285,7 @@ def _build_backend_kwargs(settings, dry_run: bool = False) -> dict:
     """Build kwargs dict for the Vertex AI backend from resolved settings."""
     vai = settings.vertexai
     return {
-        "project_id": vai.project_id or os.getenv("PROJECT_ID", ""),
+        "project_id": vai.project_id,
         "location": vai.location,
         "model_id": vai.model,
         "auth_mode": vai.auth_mode,

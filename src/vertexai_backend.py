@@ -5,16 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import time
 from pathlib import Path
 
 from src.auth import build_client
-from src.backends.base import BaseBackend
 from src.logging_config import log_api_timing
 
-logger = logging.getLogger("backends.vertexai")
+logger = logging.getLogger("vertexai_backend")
 
 # Default prompt locations relative to the project root
 _DEFAULT_EXTRACTION_PROMPT = "prompts/extraction.md"
@@ -82,8 +80,8 @@ _TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
 
 
 def _project_root() -> Path:
-    """Return the project root (3 levels up from this file: src/backends/vertexai_backend.py)."""
-    return Path(__file__).parent.parent.parent
+    """Return the project root (2 levels up from this file: src/vertexai_backend.py)."""
+    return Path(__file__).parent.parent
 
 
 def _resolve_prompt_path(prompt_file: str) -> Path:
@@ -329,7 +327,7 @@ def _call_with_retry(client: object, model_id: str, contents: list, config: obje
     raise RuntimeError(f"Vertex AI call failed after {_RETRY_MAX_ATTEMPTS} attempts") from last_exc
 
 
-class VertexAIBackend(BaseBackend):
+class VertexAIBackend:
     """Google Gemini via Vertex AI — cloud PDF extraction with optional iterative refinement.
 
     Requires ``google-genai`` (``pip install google-genai``).
@@ -355,11 +353,11 @@ class VertexAIBackend(BaseBackend):
         Keyword arguments
         -----------------
         project_id : str
-            Google Cloud project ID. Falls back to ``PROJECT_ID`` env var.
+            Google Cloud project ID.
         location : str
-            Vertex AI region, e.g. ``"europe-west3"``. Falls back to ``LOCATION`` env var.
+            Vertex AI region, e.g. ``"europe-west3"``.
         model_id : str
-            Gemini model string, e.g. ``"gemini-2.5-pro"``. Falls back to ``MODEL_ID`` env var.
+            Gemini model string, e.g. ``"gemini-2.5-pro"``.
         auth_mode : str
             ``"api"`` (default) or ``"gcloud"``.
         extraction_prompt_file : str
@@ -378,9 +376,9 @@ class VertexAIBackend(BaseBackend):
         """
         from google.genai import types
 
-        project_id: str = str(kwargs.get("project_id", os.getenv("PROJECT_ID", "")))
-        location: str = str(kwargs.get("location", os.getenv("LOCATION", "europe-west3")))
-        model_id: str = str(kwargs.get("model_id", os.getenv("MODEL_ID", "gemini-2.5-pro")))
+        project_id: str = str(kwargs.get("project_id", ""))
+        location: str = str(kwargs.get("location", "europe-west3"))
+        model_id: str = str(kwargs.get("model_id", "gemini-2.5-pro"))
         auth_mode: str = str(kwargs.get("auth_mode", "api"))
         refine_iterations: int = int(kwargs.get("refine_iterations", 0))  # type: ignore[arg-type]
         clean_stop_max_errors: int = int(kwargs.get("clean_stop_max_errors", 0))  # type: ignore[arg-type]

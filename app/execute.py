@@ -28,6 +28,7 @@ from src.models import ConversionResult
 from src.pipeline import Pipeline
 
 _PROJECT_ROOT = Path(__file__).parent.parent
+_CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
 
 
 def _list_prompts_by_prefix(prefix: str) -> list[str]:
@@ -637,8 +638,6 @@ def _init_state() -> None:
         "ex_output_path": None,
         "ex_source_path": None,   # original input file path (for cleanup of converted PDF)
         "ex_verbose": False,
-        # seeded from config on first load
-        "ex_auth_mode": vai.auth_mode,
         "ex_chunk_size": proc.chunk_size,
         "ex_chunk_overlap": proc.chunk_overlap,
         "ex_max_chunks": 0,
@@ -647,6 +646,44 @@ def _init_state() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def _sync_config_defaults_on_change(running: bool) -> None:
+    """Refresh Execute-tab defaults when config.json changes on disk."""
+    if running:
+        return
+    try:
+        current_mtime = _CONFIG_PATH.stat().st_mtime_ns
+    except OSError:
+        return
+
+    state_key = "ex_config_mtime_ns"
+    previous_mtime = st.session_state.get(state_key)
+    if previous_mtime is None:
+        st.session_state[state_key] = current_mtime
+        return
+    if previous_mtime == current_mtime:
+        return
+
+    cfg = load_settings()
+    vai_cfg = cfg.vertexai
+    proc_cfg = cfg.processing
+
+    st.session_state[state_key] = current_mtime
+    st.session_state["ex_chunk_size"] = proc_cfg.chunk_size
+    st.session_state["ex_chunk_overlap"] = proc_cfg.chunk_overlap
+    st.session_state["ex_diminishing_returns"] = vai_cfg.diminishing_returns_enabled
+    st.session_state.pop("ex_chunk_size_input", None)
+    st.session_state.pop("ex_chunk_overlap_input", None)
+    st.session_state.pop("vai_project_id", None)
+    st.session_state.pop("vai_location", None)
+    st.session_state.pop("vai_auth_mode", None)
+    st.session_state.pop("vai_model_id", None)
+    st.session_state.pop("vai_refine_iterations", None)
+    st.session_state.pop("vai_extraction_prompt_file", None)
+    st.session_state.pop("vai_refinement_prompt_file", None)
+    st.session_state.pop("vai_clean_stop_max_errors", None)
+    st.session_state.pop("vai_diminishing_returns", None)
 
 
 def _clear_output() -> None:
@@ -880,6 +917,7 @@ def run() -> None:
     proc_cfg = cfg.processing
 
     running: bool = st.session_state.ex_running
+    _sync_config_defaults_on_change(running)
 
     # ── 1. File selection ───────────────────────────────────────────────────
     st.subheader("Select File")
@@ -967,10 +1005,6 @@ def run() -> None:
     st.divider()
 
     # ── 2. Options ──────────────────────────────────────────────────────────
-    # Backend and auth mode are set in the sidebar (shared across tabs)
-    backend_choice: str = st.session_state.get("global_backend", cfg.processing.backend)
-    auth_mode: str = st.session_state.get("global_auth_mode", vai_cfg.auth_mode)
-
     verbose: bool = st.checkbox(
         "Verbose",
         help="Show DEBUG-level log messages and save intermediate artifacts.",
@@ -978,34 +1012,135 @@ def run() -> None:
         disabled=running,
     )
 
-    # ── Advanced options (chunking + Vertex AI) ──────────────────────────────
+    # ── Advanced options (Vertex AI + chunking) ──────────────────────────────
     with st.expander("Advanced options", expanded=False):
-        # Chunking
-        st.markdown("##### Chunking")
+        # Row 1: Project ID | Location | Refinement Passes
+        adv1, adv2, adv3 = st.columns([2, 2, 2])
+        with adv1:
+            st.text_input(
+                "Project ID",
+                value=vai_cfg.project_id,
+                help="Google Cloud project ID (from the active machine profile).",
+                key="vai_project_id",
+                disabled=running,
+            )
+        with adv2:
+            st.text_input(
+                "Location",
+                value=vai_cfg.location,
+                help="Vertex AI region, e.g. europe-west3.",
+                key="vai_location",
+                disabled=running,
+            )
+        with adv3:
+            st.number_input(
+                "Refinement Passes",
+                min_value=0,
+                max_value=10,
+                value=vai_cfg.refine_iterations,
+                step=1,
+                help="Number of refinement passes after extraction. 0 = extraction only.",
+                key="vai_refine_iterations",
+                disabled=running,
+            )
+
+        # Row 2: Auth Mode | Model | Max Errors (CLEAN)
+        adv4, adv5, adv6 = st.columns([2, 2, 2])
+        with adv4:
+            st.selectbox(
+                "Auth Mode",
+                ["api", "gcloud"],
+                index=0 if vai_cfg.auth_mode == "api" else 1,
+                help="**api**: uses GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
+                key="vai_auth_mode",
+                disabled=running,
+            )
+        with adv5:
+            _model_idx = _VAI_MODELS.index(vai_cfg.model) if vai_cfg.model in _VAI_MODELS else 0
+            st.selectbox(
+                "Model",
+                _VAI_MODELS,
+                index=_model_idx,
+                help="Gemini model to use for extraction.",
+                key="vai_model_id",
+                disabled=running,
+            )
+        with adv6:
+            st.number_input(
+                "Max Errors (CLEAN)",
+                min_value=-1,
+                value=vai_cfg.clean_stop_max_errors,
+                step=1,
+                help=(
+                    "Early-stop threshold for refinement. "
+                    "**-1**: stop on any CLEAN verdict. **0**: only when 0 errors remain."
+                ),
+                key="vai_clean_stop_max_errors",
+                disabled=running,
+            )
+
+        st.checkbox(
+            "Enable diminishing returns stop",
+            value=vai_cfg.diminishing_returns_enabled,
+            help=(
+                "When enabled, refinement stops early if two consecutive passes show no "
+                "reduction in errors."
+            ),
+            key="vai_diminishing_returns",
+            disabled=running,
+        )
+
+        # Row 3: Extraction Prompt | Refinement Prompt
+        _ext_prompts = _list_extraction_prompts()
+        _ref_prompts = _list_refinement_prompts()
+        adv7, adv8 = st.columns([3, 3])
+        with adv7:
+            _ext_default = vai_cfg.extraction_prompt
+            st.selectbox(
+                "Extraction Prompt",
+                _ext_prompts,
+                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
+                key="vai_extraction_prompt_file",
+                disabled=running,
+            )
+        with adv8:
+            _ref_default = vai_cfg.refinement_prompt
+            st.selectbox(
+                "Refinement Prompt",
+                _ref_prompts,
+                index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
+                key="vai_refinement_prompt_file",
+                disabled=running,
+            )
+
+        st.markdown("---")
+        st.markdown("##### Processing")
+
+        # Row 4: Chunk Size | Chunk Overlap | Max Chunks
         col_chunk, col_overlap, col_max_chunks = st.columns([2, 2, 2])
         with col_chunk:
             chunk_size: int = st.number_input(
-                "Chunk size (pages, 0 = disabled)",
+                "Chunk Size (pages)",
                 min_value=0,
                 value=proc_cfg.chunk_size,
                 step=5,
-                help="Split the document into chunks of this many pages and process each independently. 0 disables chunking.",
+                help="Split the document into chunks of this many pages. 0 disables chunking.",
                 key="ex_chunk_size_input",
                 disabled=running,
             )
         with col_overlap:
             chunk_overlap: int = st.number_input(
-                "Chunk overlap (pages)",
+                "Chunk Overlap (pages)",
                 min_value=0,
                 value=proc_cfg.chunk_overlap,
                 step=1,
-                help="Trailing pages from the previous chunk to include at the start of the next, for context continuity.",
+                help="Trailing pages from the previous chunk included at the start of the next, for context continuity.",
                 key="ex_chunk_overlap_input",
                 disabled=running,
             )
         with col_max_chunks:
             max_chunks: int = st.number_input(
-                "Max chunks (0 = all)",
+                "Max Chunks (0 = all)",
                 min_value=0,
                 value=st.session_state.get("ex_max_chunks", 0),
                 step=1,
@@ -1014,117 +1149,18 @@ def run() -> None:
                 disabled=running,
             )
 
-        # Vertex AI configuration
-        if backend_choice == "vertexai":
-            st.markdown("##### Vertex AI Configuration")
-            vai_col1, vai_col2, vai_col3 = st.columns([2, 2, 2])
+        st.checkbox(
+            "Validate after convert",
+            value=proc_cfg.validate_after_convert,
+            help=(
+                "Run a post-conversion validation check on the output markdown. "
+                "The default for this checkbox is controlled by **Settings → Validate after convert by default**."
+            ),
+            key="ex_validate_after_convert",
+            disabled=running,
+        )
 
-            with vai_col1:
-                st.text_input(
-                    "Project ID",
-                    value=vai_cfg.project_id or os.getenv("PROJECT_ID", ""),
-                    help="Your Google Cloud project ID.",
-                    key="vai_project_id",
-                    disabled=running,
-                )
-            with vai_col2:
-                st.text_input(
-                    "Location",
-                    value=vai_cfg.location,
-                    help="Vertex AI region, e.g. europe-west3.",
-                    key="vai_location",
-                    disabled=running,
-                )
-            with vai_col3:
-                _env_model = os.getenv("MODEL_ID", vai_cfg.model)
-                _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
-                st.selectbox(
-                    "Model",
-                    _VAI_MODELS,
-                    index=_model_idx,
-                    help="Gemini model to use for extraction.",
-                    key="vai_model_id",
-                    disabled=running,
-                )
-
-            _cache_info = vertexai_pricing.get_cache_info()
-            _cache_status = (
-                f"Cached {_cache_info['fetched_at']} · {_cache_info['num_models']} models"
-                if _cache_info["cached"]
-                else f"Built-in fallback · {_cache_info['num_models']} models"
-            )
-            _upd_col, _status_col = st.columns([1, 4])
-            with _upd_col:
-                if st.button("Update cost table", key="update_pricing_btn", disabled=running):
-                    with st.spinner("Fetching Vertex AI pricing..."):
-                        try:
-                            vertexai_pricing.fetch_and_cache()
-                            st.success("Pricing table updated.")
-                        except Exception as _e:
-                            st.error(f"Fetch failed: {_e}")
-                    st.rerun()
-            with _status_col:
-                st.caption(_cache_status)
-
-            vai_col4, vai_col5, vai_col6 = st.columns([2, 2, 2])
-
-            with vai_col4:
-                st.slider(
-                    "Refinement passes (0 = extraction only)",
-                    min_value=0,
-                    max_value=10,
-                    value=vai_cfg.refine_iterations,
-                    key="vai_refine_iterations",
-                    disabled=running,
-                )
-            _ext_prompts = _list_extraction_prompts()
-            _ref_prompts = _list_refinement_prompts()
-            with vai_col5:
-                _ext_default = vai_cfg.extraction_prompt
-                st.selectbox(
-                    "Extraction prompt",
-                    _ext_prompts,
-                    index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
-                    key="vai_extraction_prompt_file",
-                    disabled=running,
-                )
-            with vai_col6:
-                if st.session_state.get("vai_refine_iterations", 0) > 0:
-                    _ref_default = vai_cfg.refinement_prompt
-                    st.selectbox(
-                        "Refinement prompt",
-                        _ref_prompts,
-                        index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
-                        key="vai_refinement_prompt_file",
-                        disabled=running,
-                    )
-
-            if st.session_state.get("vai_refine_iterations", 0) > 0:
-                vai_col7, vai_col8, _ = st.columns([2, 2, 2])
-                with vai_col7:
-                    st.number_input(
-                        "Max errors to accept as CLEAN",
-                        min_value=-1,
-                        value=vai_cfg.clean_stop_max_errors,
-                        step=1,
-                        help=(
-                            "Early-stop threshold. Stop only if errors <= this value. "
-                            "**-1**: stop on any CLEAN. **0**: only when 0 errors remain."
-                        ),
-                        key="vai_clean_stop_max_errors",
-                        disabled=running,
-                    )
-                with vai_col8:
-                    st.checkbox(
-                        "Diminishing returns stop",
-                        value=vai_cfg.diminishing_returns_enabled,
-                        help=(
-                            "Stop refinement early when two consecutive passes show no error reduction. "
-                            "Uncheck to always run all refinement passes regardless of improvement."
-                        ),
-                        key="vai_diminishing_returns",
-                        disabled=running,
-                    )
+    auth_mode: str = st.session_state.get("vai_auth_mode", vai_cfg.auth_mode)
 
     if pdf_path is not None and not running:
         st.caption(f"Output will be saved to: `{pdf_path.with_suffix('.md')}`")
@@ -1158,31 +1194,29 @@ def run() -> None:
 
             _clear_output()
 
-            extra_kwargs: dict = {}
-            if backend_choice == "vertexai":
-                extra_kwargs = {
-                    "project_id": st.session_state.get("vai_project_id", ""),
-                    "location": st.session_state.get("vai_location", "europe-west3"),
-                    "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
-                    "auth_mode": auth_mode,
-                    "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
-                    "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", 0),
-                    "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", True),
-                    "extraction_prompt_file": st.session_state.get(
-                        "vai_extraction_prompt_file", "prompts/extraction.md"
-                    ),
-                    "refinement_prompt_file": st.session_state.get(
-                        "vai_refinement_prompt_file", "prompts/refinement.md"
-                    ),
-                    "dry_run": dry_run_check,
-                }
+            extra_kwargs: dict = {
+                "project_id": st.session_state.get("vai_project_id", ""),
+                "location": st.session_state.get("vai_location", "europe-west3"),
+                "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
+                "auth_mode": auth_mode,
+                "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
+                "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", 0),
+                "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", True),
+                "extraction_prompt_file": st.session_state.get(
+                    "vai_extraction_prompt_file", "prompts/extraction.md"
+                ),
+                "refinement_prompt_file": st.session_state.get(
+                    "vai_refinement_prompt_file", "prompts/refinement.md"
+                ),
+                "dry_run": dry_run_check,
+            }
 
             log_q: queue.Queue = queue.Queue()
             result_q: queue.Queue = queue.Queue()
 
             thread = threading.Thread(
                 target=_run_conversion,
-                args=(pdf_path, backend_choice, verbose, result_q, log_q),
+                args=(pdf_path, "vertexai", verbose, result_q, log_q),
                 kwargs={
                     "backend_kwargs": extra_kwargs,
                     "chunk_size": chunk_size,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-# Load .env from project root if present (populates PROJECT_ID, GOOGLE_API_KEY, etc.)
+# Load .env from project root if present (populates GOOGLE_API_KEY)
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent.parent / ".env", override=False)
@@ -42,65 +42,41 @@ st.markdown(
 )
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────────
-from src.backends import list_available  # noqa: E402
+from src.config import load_settings as _load_settings, save_settings as _save_settings  # noqa: E402
 
 st.sidebar.title("PDF to Markdown")
 st.sidebar.markdown("Convert PDF documents to clean Markdown for LLMs and other tools.")
 st.sidebar.markdown("---")
 
-_BACKEND_DESCRIPTIONS: dict[str, str] = {
-    "pdfplumber": "born-digital PDFs, fast",
-    "marker":     "high accuracy, GPU optional",
-    "vertexai":   "Gemini on Vertex AI, cloud",
-}
-
-_installed = list_available()
-_lines = ["**Available backends**", ""]
-for _b, _desc in _BACKEND_DESCRIPTIONS.items():
-    _tick = "[x]" if _b in _installed else "[ ]"
-    _lines.append(f"{_tick} `{_b}` — {_desc}\n")
-st.sidebar.markdown("\n".join(_lines))
-
-st.sidebar.markdown("---")
-
-# ── Global settings (shared across tabs) ──────────────────────────────────
-from src.config import load_settings as _load_settings  # noqa: E402
-
 _cfg = _load_settings()
-_proc = _cfg.processing
+
+# ── Machine selector ─────────────────────────────────────────────────────────
+_machine_names = [m.name for m in _cfg.machines]
+_active_idx = _machine_names.index(_cfg.active_machine) if _cfg.active_machine in _machine_names else 0
+
+_selected_machine = st.sidebar.selectbox(
+    "Machine",
+    _machine_names,
+    index=_active_idx,
+    help="Select the machine profile to use. Each profile has its own Vertex AI settings.",
+    key="global_machine",
+)
+
+if _selected_machine != _cfg.active_machine:
+    _cfg.active_machine = _selected_machine
+    _save_settings(_cfg)
+    st.rerun()
+
+# Reload settings after potential machine switch so vertexai is resolved correctly
+_cfg = _load_settings()
 _vai = _cfg.vertexai
-
-_backend_options = _installed if _installed else ["vertexai"]
-if "vertexai" in _backend_options:
-    _backend_options = ["vertexai"] + [b for b in _backend_options if b != "vertexai"]
-
-st.sidebar.selectbox(
-    "Backend",
-    _backend_options,
-    index=_backend_options.index(_proc.backend) if _proc.backend in _backend_options else 0,
-    format_func=lambda x: {
-        "pdfplumber": "pdfplumber (born-digital, fast)",
-        "marker": "marker (high accuracy, GPU optional)",
-        "vertexai": "vertexai (Gemini, cloud)",
-    }.get(x, x),
-    help="Extraction engine used for conversion.",
-    key="global_backend",
-)
-
-st.sidebar.selectbox(
-    "Auth Mode",
-    ["api", "gcloud"],
-    index=0 if _vai.auth_mode == "api" else 1,
-    help="**api**: GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
-    key="global_auth_mode",
-)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Project root: `{Path(__file__).parent.parent}`")
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────────
-tab_execute, tab_batch, tab_log, tab_settings = st.tabs(
-    ["Convert File", "Batch Convert", "History", "Settings"]
+tab_execute, tab_batch, tab_log, tab_settings, tab_vertexai = st.tabs(
+    ["Convert File", "Batch Convert", "History", "Settings", "Vertex AI"]
 )
 
 with tab_execute:
@@ -118,3 +94,7 @@ with tab_log:
 with tab_settings:
     import tab_settings as settings_tab  # noqa: PLC0415
     settings_tab.run()
+
+with tab_vertexai:
+    import tab_vertexai as vertexai_tab  # noqa: PLC0415
+    vertexai_tab.run()

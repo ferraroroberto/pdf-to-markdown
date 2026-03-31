@@ -11,6 +11,7 @@ import pytest
 from src.config import (
     BatchSettings,
     LoggingSettings,
+    MachineProfile,
     ProcessingSettings,
     Settings,
     VertexAISettings,
@@ -70,10 +71,10 @@ class TestLoadSettingsDefaults:
             s = load_settings()
         assert isinstance(s, Settings)
 
-    def test_default_backend(self, tmp_path):
+    def test_default_model(self, tmp_path):
         with patch("src.config._CONFIG_PATH", tmp_path / "missing.json"):
             s = load_settings()
-        assert s.processing.backend == "vertexai"
+        assert s.vertexai.model == "gemini-2.5-pro"
 
     def test_default_chunk_size_zero(self, tmp_path):
         with patch("src.config._CONFIG_PATH", tmp_path / "missing.json"):
@@ -90,6 +91,12 @@ class TestLoadSettingsDefaults:
             s = load_settings()
         assert s.vertexai.location == "europe-west3"
 
+    def test_default_creates_one_machine(self, tmp_path):
+        with patch("src.config._CONFIG_PATH", tmp_path / "missing.json"):
+            s = load_settings()
+        assert len(s.machines) == 1
+        assert s.machines[0].name == "Default"
+
 
 # ---------------------------------------------------------------------------
 # load_settings — reads from file
@@ -97,16 +104,24 @@ class TestLoadSettingsDefaults:
 
 
 class TestLoadSettingsFromFile:
-    def test_reads_backend_from_file(self, tmp_path):
+    def test_reads_machines_from_file(self, tmp_path):
         cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"processing": {"backend": "marker"}}), encoding="utf-8")
+        cfg.write_text(
+            json.dumps({"machines": [{"name": "Work", "project_id": "my-proj"}]}),
+            encoding="utf-8",
+        )
         with patch("src.config._CONFIG_PATH", cfg):
             s = load_settings()
-        assert s.processing.backend == "marker"
+        assert len(s.machines) == 1
+        assert s.machines[0].name == "Work"
+        assert s.vertexai.project_id == "my-proj"
 
-    def test_reads_model_from_file(self, tmp_path):
+    def test_reads_model_from_machine(self, tmp_path):
         cfg = tmp_path / "config.json"
-        cfg.write_text(json.dumps({"vertexai": {"model": "gemini-2.5-flash"}}), encoding="utf-8")
+        cfg.write_text(
+            json.dumps({"machines": [{"name": "Default", "model": "gemini-2.5-flash"}]}),
+            encoding="utf-8",
+        )
         with patch("src.config._CONFIG_PATH", cfg):
             s = load_settings()
         assert s.vertexai.model == "gemini-2.5-flash"
@@ -116,7 +131,7 @@ class TestLoadSettingsFromFile:
         cfg.write_text("this is not json", encoding="utf-8")
         with patch("src.config._CONFIG_PATH", cfg):
             s = load_settings()
-        assert s.processing.backend == "vertexai"  # default
+        assert s.processing.chunk_size == 0  # default
 
     def test_reads_nested_extensions_list(self, tmp_path):
         cfg = tmp_path / "config.json"
@@ -136,13 +151,13 @@ class TestLoadSettingsFromFile:
 class TestLoadSettingsOverrides:
     def test_override_replaces_value(self, tmp_path):
         with patch("src.config._CONFIG_PATH", tmp_path / "missing.json"):
-            s = load_settings({"processing": {"backend": "pdfplumber"}})
-        assert s.processing.backend == "pdfplumber"
+            s = load_settings({"processing": {"chunk_size": 7}})
+        assert s.processing.chunk_size == 7
 
-    def test_override_partial_nested_keeps_other_keys(self, tmp_path):
+    def test_override_vertexai_model_keeps_machine_location(self, tmp_path):
         cfg = tmp_path / "config.json"
         cfg.write_text(
-            json.dumps({"vertexai": {"model": "gemini-2.5-pro", "location": "us-east1"}}),
+            json.dumps({"machines": [{"name": "Default", "model": "gemini-2.5-pro", "location": "us-east1"}]}),
             encoding="utf-8",
         )
         with patch("src.config._CONFIG_PATH", cfg):
@@ -170,15 +185,14 @@ class TestSaveSettings:
             save_settings(s)
         data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "processing" in data
-        assert "vertexai" in data
+        assert "machines" in data
 
     def test_save_and_reload_roundtrip(self, tmp_path):
         cfg = tmp_path / "config.json"
         with patch("src.config._CONFIG_PATH", cfg):
-            s = load_settings({"processing": {"backend": "marker", "chunk_size": 5}})
+            s = load_settings({"processing": {"chunk_size": 5}})
             save_settings(s)
             s2 = load_settings()
-        assert s2.processing.backend == "marker"
         assert s2.processing.chunk_size == 5
 
     def test_save_preserves_extensions_list(self, tmp_path):

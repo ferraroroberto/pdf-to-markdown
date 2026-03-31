@@ -24,6 +24,7 @@ from src.config import load_settings
 from src.models import ChunkResult
 
 _PROJECT_ROOT = Path(__file__).parent.parent
+_CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
 
 
 def _list_prompts_by_prefix(prefix: str) -> list[str]:
@@ -184,7 +185,6 @@ def _init_state() -> None:
         "bt_result_q": None,
         "bt_folder": "",
         "bt_output": "",
-        "bt_auth_mode": cfg.vertexai.auth_mode,
         "bt_chunk_size": cfg.processing.chunk_size,
         "bt_chunk_overlap": cfg.processing.chunk_overlap,
         "bt_recursive": cfg.batch.recursive,
@@ -194,6 +194,47 @@ def _init_state() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
+
+def _sync_config_defaults_on_change(running: bool) -> None:
+    """Refresh Batch-tab defaults when config.json changes on disk."""
+    if running:
+        return
+    try:
+        current_mtime = _CONFIG_PATH.stat().st_mtime_ns
+    except OSError:
+        return
+
+    state_key = "bt_config_mtime_ns"
+    previous_mtime = st.session_state.get(state_key)
+    if previous_mtime is None:
+        st.session_state[state_key] = current_mtime
+        return
+    if previous_mtime == current_mtime:
+        return
+
+    cfg = load_settings()
+    vai = cfg.vertexai
+    proc = cfg.processing
+
+    st.session_state[state_key] = current_mtime
+    st.session_state["bt_chunk_size"] = proc.chunk_size
+    st.session_state["bt_chunk_overlap"] = proc.chunk_overlap
+    st.session_state["bt_recursive"] = cfg.batch.recursive
+    st.session_state["bt_diminishing_returns"] = vai.diminishing_returns_enabled
+    st.session_state.pop("bt_recursive_check", None)
+    st.session_state.pop("bt_chunk_size_input", None)
+    st.session_state.pop("bt_chunk_overlap_input", None)
+    st.session_state.pop("bt_extensions", None)
+    st.session_state.pop("bt_project_id", None)
+    st.session_state.pop("bt_location", None)
+    st.session_state.pop("bt_auth_mode_select", None)
+    st.session_state.pop("bt_model_id", None)
+    st.session_state.pop("bt_refine_iterations", None)
+    st.session_state.pop("bt_extraction_prompt", None)
+    st.session_state.pop("bt_refinement_prompt", None)
+    st.session_state.pop("bt_clean_stop_max_errors", None)
+    st.session_state.pop("bt_diminishing_returns", None)
 
 
 # ── Tab UI ──────────────────────────────────────────────────────────────────────
@@ -207,6 +248,7 @@ def run() -> None:
     proc = cfg.processing
 
     running: bool = st.session_state.bt_running
+    _sync_config_defaults_on_change(running)
 
     st.subheader("Batch Folder Processing")
 
@@ -266,106 +308,148 @@ def run() -> None:
     st.divider()
 
     # ── Options ─────────────────────────────────────────────────────────────
-    # Auth mode is set in the sidebar (shared across tabs)
-    auth_mode: str = st.session_state.get("global_auth_mode", vai.auth_mode)
-
-    col_rec, col_verbose = st.columns([1, 1])
-
-    with col_rec:
-        recursive: bool = st.checkbox("Recursive", value=cfg.batch.recursive, key="bt_recursive_check", disabled=running)
-
-    with col_verbose:
-        verbose: bool = st.checkbox("Verbose", key="bt_verbose_check", disabled=running)
-
-    # ── File type selection ─────────────────────────────────────────────────
-    from src.file_converter import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS
-    all_ext_options = sorted([".pdf"] + list(OFFICE_EXTENSIONS) + list(IMAGE_EXTENSIONS))
-    selected_extensions: list[str] = st.multiselect(
-        "File types to process",
-        options=all_ext_options,
-        default=cfg.batch.extensions,
-        help="Select which file types to include in batch processing. Non-PDF types require Vertex AI backend.",
-        key="bt_extensions",
-        disabled=running,
-    )
-    if not selected_extensions:
-        selected_extensions = [".pdf"]
+    verbose: bool = st.checkbox("Verbose", key="bt_verbose_check", disabled=running)
 
     # ── Advanced options ────────────────────────────────────────────────────
     with st.expander("Advanced options", expanded=False):
-        st.markdown("##### Chunking")
+        # Row 1: Project ID | Location | Refinement Passes
+        vb1, vb2, vb3 = st.columns([2, 2, 2])
+        with vb1:
+            st.text_input(
+                "Project ID", value=vai.project_id,
+                help="Google Cloud project ID (from the active machine profile).",
+                key="bt_project_id", disabled=running,
+            )
+        with vb2:
+            st.text_input(
+                "Location", value=vai.location,
+                help="Vertex AI region, e.g. europe-west3.",
+                key="bt_location", disabled=running,
+            )
+        with vb3:
+            st.number_input(
+                "Refinement Passes",
+                min_value=0, max_value=10,
+                value=vai.refine_iterations,
+                step=1,
+                help="Number of refinement passes after extraction. 0 = extraction only.",
+                key="bt_refine_iterations", disabled=running,
+            )
+
+        # Row 2: Auth Mode | Model | Max Errors (CLEAN)
+        vb4, vb5, vb6 = st.columns([2, 2, 2])
+        with vb4:
+            st.selectbox(
+                "Auth Mode",
+                ["api", "gcloud"],
+                index=0 if vai.auth_mode == "api" else 1,
+                help="**api**: uses GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
+                key="bt_auth_mode_select",
+                disabled=running,
+            )
+        with vb5:
+            _model_idx = _VAI_MODELS.index(vai.model) if vai.model in _VAI_MODELS else 0
+            st.selectbox(
+                "Model", _VAI_MODELS, index=_model_idx, key="bt_model_id", disabled=running,
+            )
+        with vb6:
+            st.number_input(
+                "Max Errors (CLEAN)",
+                min_value=-1,
+                value=vai.clean_stop_max_errors,
+                step=1,
+                help=(
+                    "Early-stop threshold for refinement. "
+                    "**-1**: stop on any CLEAN verdict. **0**: only when 0 errors remain."
+                ),
+                key="bt_clean_stop_max_errors",
+                disabled=running,
+            )
+
+        st.checkbox(
+            "Enable diminishing returns stop",
+            value=vai.diminishing_returns_enabled,
+            help=(
+                "When enabled, refinement stops early if two consecutive passes show no "
+                "reduction in errors."
+            ),
+            key="bt_diminishing_returns",
+            disabled=running,
+        )
+
+        # Row 3: Extraction Prompt | Refinement Prompt
+        _ext_prompts = _list_extraction_prompts()
+        _ref_prompts = _list_refinement_prompts()
+        vb7, vb8 = st.columns([3, 3])
+        with vb7:
+            _ext_default = vai.extraction_prompt
+            st.selectbox(
+                "Extraction Prompt", _ext_prompts,
+                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
+                key="bt_extraction_prompt", disabled=running,
+            )
+        with vb8:
+            _ref_default = vai.refinement_prompt
+            st.selectbox(
+                "Refinement Prompt",
+                _ref_prompts,
+                index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
+                key="bt_refinement_prompt",
+                disabled=running,
+            )
+
+        st.markdown("---")
+        st.markdown("##### Processing")
+
         col_chunk, col_overlap = st.columns([2, 2])
         with col_chunk:
             chunk_size: int = st.number_input(
-                "Chunk size (pages, 0 = off)",
+                "Chunk Size (pages)",
                 min_value=0,
                 value=proc.chunk_size,
                 step=5,
+                help="Split documents into chunks of this many pages. 0 disables chunking.",
                 key="bt_chunk_size_input",
                 disabled=running,
             )
         with col_overlap:
             chunk_overlap: int = st.number_input(
-                "Chunk overlap (pages)",
+                "Chunk Overlap (pages)",
                 min_value=0,
                 value=proc.chunk_overlap,
                 step=1,
+                help="Trailing pages from the previous chunk included at the start of the next.",
                 key="bt_chunk_overlap_input",
                 disabled=running,
             )
 
-        st.markdown("##### Vertex AI Configuration")
-        vb1, vb2, vb3 = st.columns([2, 2, 2])
-        with vb1:
-            bt_project_id: str = st.text_input(
-                "Project ID", value=vai.project_id or os.getenv("PROJECT_ID", ""),
-                key="bt_project_id", disabled=running,
-            )
-        with vb2:
-            bt_location: str = st.text_input(
-                "Location", value=vai.location, key="bt_location", disabled=running,
-            )
-        with vb3:
-            _env_model = os.getenv("MODEL_ID", vai.model)
-            _model_idx = _VAI_MODELS.index(_env_model) if _env_model in _VAI_MODELS else 0
-            bt_model: str = st.selectbox(
-                "Model", _VAI_MODELS, index=_model_idx, key="bt_model_id", disabled=running,
-            )
+        st.markdown("---")
+        st.markdown("##### Batch")
 
-        vb4, vb5, vb6 = st.columns([2, 2, 2])
-        with vb4:
-            bt_refine: int = st.slider(
-                "Refinement passes", 0, 10, vai.refine_iterations,
-                key="bt_refine_iterations", disabled=running,
+        col_rec, col_ext = st.columns([1, 3])
+        with col_rec:
+            recursive: bool = st.checkbox(
+                "Recursive folder scan",
+                value=cfg.batch.recursive,
+                help="Scan subfolders recursively for matching files.",
+                key="bt_recursive_check",
+                disabled=running,
             )
-            if st.session_state.get("bt_refine_iterations", 0) > 0:
-                st.checkbox(
-                    "Diminishing returns stop",
-                    value=vai.diminishing_returns_enabled,
-                    help=(
-                        "Stop refinement early when two consecutive passes show no error reduction. "
-                        "Uncheck to always run all passes."
-                    ),
-                    key="bt_diminishing_returns",
-                    disabled=running,
-                )
-        _ext_prompts = _list_extraction_prompts()
-        _ref_prompts = _list_refinement_prompts()
-        with vb5:
-            _ext_default = vai.extraction_prompt
-            bt_extract_prompt: str = st.selectbox(
-                "Extraction prompt", _ext_prompts,
-                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
-                key="bt_extraction_prompt", disabled=running,
+        with col_ext:
+            from src.file_converter import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS
+            all_ext_options = sorted([".pdf"] + list(OFFICE_EXTENSIONS) + list(IMAGE_EXTENSIONS))
+            selected_extensions: list[str] = st.multiselect(
+                "File extensions",
+                options=all_ext_options,
+                default=cfg.batch.extensions,
+                help="File types to include. Non-PDF types require Vertex AI backend.",
+                key="bt_extensions",
+                disabled=running,
             )
-        with vb6:
-            if st.session_state.get("bt_refine_iterations", 0) > 0:
-                _ref_default = vai.refinement_prompt
-                bt_refine_prompt: str = st.selectbox(
-                    "Refinement prompt", _ref_prompts,
-                    index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
-                    key="bt_refinement_prompt", disabled=running,
-                )
+        if not selected_extensions:
+            selected_extensions = [".pdf"]
+
+    auth_mode: str = st.session_state.get("bt_auth_mode_select", vai.auth_mode)
 
     st.divider()
 
@@ -406,7 +490,7 @@ def run() -> None:
                 "model_id": st.session_state.get("bt_model_id", "gemini-2.5-pro"),
                 "auth_mode": auth_mode,
                 "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
-                "clean_stop_max_errors": vai.clean_stop_max_errors,
+                "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
                 "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
                 "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
                 "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),

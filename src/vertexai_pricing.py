@@ -25,8 +25,8 @@ logger = logging.getLogger("vertexai_pricing")
 
 _PRICING_URL = "https://cloud.google.com/vertex-ai/generative-ai/pricing"
 _PROJECT_ROOT = Path(__file__).parent.parent
-CACHE_JSON_PATH = _PROJECT_ROOT / "tmp" / "vertexai_pricing_cache.json"
-CACHE_MD_PATH = _PROJECT_ROOT / "tmp" / "vertexai_pricing.md"
+CACHE_JSON_PATH = _PROJECT_ROOT / "pricing" / "vertexai_pricing_cache.json"
+CACHE_MD_PATH = _PROJECT_ROOT / "pricing" / "vertexai_pricing.md"
 
 # ---------------------------------------------------------------------------
 # Hardcoded fallback — extracted from the Google Cloud pricing page 2026-03-27
