@@ -7,8 +7,8 @@
     "refine_iterations": 0,
     "clean_stop_max_errors": 0,
     "diminishing_returns_enabled": true,
-    "extraction_prompt": "prompts/extraction.md",
-    "refinement_prompt": "prompts/refinement.md"
+    "extraction_prompt": "prompts/extraction_rag.md",
+    "refinement_prompt": "prompts/refinement_rag.md"
   },
   "processing": {
     "backend": "vertexai",
