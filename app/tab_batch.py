@@ -131,6 +131,7 @@ def _run_batch_worker(
                 "auth_mode": backend_kwargs.get("auth_mode", "api"),
                 "refine_iterations": backend_kwargs.get("refine_iterations", 0),
                 "clean_stop_max_errors": backend_kwargs.get("clean_stop_max_errors", 0),
+                "diminishing_returns_enabled": backend_kwargs.get("diminishing_returns_enabled", True),
                 "extraction_prompt": backend_kwargs.get("extraction_prompt_file", "prompts/extraction.md"),
                 "refinement_prompt": backend_kwargs.get("refinement_prompt_file", "prompts/refinement.md"),
             },
@@ -180,6 +181,7 @@ def _init_state() -> None:
         "bt_chunk_overlap": cfg.processing.chunk_overlap,
         "bt_recursive": cfg.batch.recursive,
         "bt_verbose": False,
+        "bt_diminishing_returns": cfg.vertexai.diminishing_returns_enabled,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -328,6 +330,17 @@ def run() -> None:
                 "Refinement passes", 0, 10, vai.refine_iterations,
                 key="bt_refine_iterations", disabled=running,
             )
+            if st.session_state.get("bt_refine_iterations", 0) > 0:
+                st.checkbox(
+                    "Diminishing returns stop",
+                    value=vai.diminishing_returns_enabled,
+                    help=(
+                        "Stop refinement early when two consecutive passes show no error reduction. "
+                        "Uncheck to always run all passes."
+                    ),
+                    key="bt_diminishing_returns",
+                    disabled=running,
+                )
         _prompts = _list_prompts()
         with vb5:
             _ext_default = vai.extraction_prompt
@@ -385,6 +398,7 @@ def run() -> None:
                 "auth_mode": auth_mode,
                 "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
                 "clean_stop_max_errors": vai.clean_stop_max_errors,
+                "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
                 "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
                 "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),
                 "dry_run": bt_dry_run,

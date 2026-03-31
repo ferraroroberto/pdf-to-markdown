@@ -36,6 +36,7 @@ class VertexAISettings:
     auth_mode: str = "api"
     refine_iterations: int = 0
     clean_stop_max_errors: int = 0
+    diminishing_returns_enabled: bool = True
     extraction_prompt: str = "prompts/extraction.md"
     refinement_prompt: str = "prompts/refinement.md"
 
@@ -107,6 +108,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
             auth_mode=str(vai_raw.get("auth_mode", "api")),
             refine_iterations=int(vai_raw.get("refine_iterations", 0)),
             clean_stop_max_errors=int(vai_raw.get("clean_stop_max_errors", 0)),
+            diminishing_returns_enabled=bool(vai_raw.get("diminishing_returns_enabled", True)),
             extraction_prompt=str(vai_raw.get("extraction_prompt", "prompts/extraction.md")),
             refinement_prompt=str(vai_raw.get("refinement_prompt", "prompts/refinement.md")),
         ),

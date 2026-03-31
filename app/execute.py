@@ -113,16 +113,38 @@ def _erase_prior_execution_artifacts(
     protect_resolved: frozenset[Path] | None = None,
     logger: logging.Logger | None = None,
     log_removals: bool = False,
+    preserve_chunk_files: bool = True,
 ) -> None:
     """Remove files from a previous run that share *stem* (main output basename).
 
-    Matches ``{stem}.*``, ``{stem}_chunk_*``, and the ``_chunks_{stem}/`` temp
-    directory. Paths whose resolved path is in *protect_resolved* are skipped
-    (typically the current source PDF so it is never deleted).
+    Matches ``{stem}.*`` and ``{stem}_chunk_*``, and removes the legacy
+    ``_chunks_{stem}/`` temp directory.  Paths whose resolved path is in
+    *protect_resolved* are skipped (typically the current source PDF).
+
+    When *preserve_chunk_files* is ``True`` (the default), files matching
+    ``{stem}.chunk_*.pdf``, ``{stem}.chunk_*.md``, and
+    ``{stem}.chunk_*.corrections.md`` are **kept** so a subsequent run can
+    resume from where the previous one left off.  Set to ``False`` to force a
+    full clean restart (e.g. when the user explicitly requests it).
     """
     import shutil as _shutil
 
     protect = protect_resolved or frozenset()
+
+    # Patterns that belong to resumable chunk artifacts (flat-layout naming)
+    _CHUNK_SUFFIXES = (".pdf", ".md", ".corrections.md")
+
+    def _is_chunk_artifact(p: Path) -> bool:
+        """Return True if *p* is a resumable chunk file (e.g. stem.chunk_001.md)."""
+        for sfx in _CHUNK_SUFFIXES:
+            if p.name.endswith(sfx):
+                inner = p.name[: -len(sfx)]
+                # Check if remainder looks like "{stem}.chunk_NNN"
+                if inner.startswith(f"{stem}.chunk_"):
+                    tail = inner[len(f"{stem}.chunk_"):]
+                    if tail.isdigit():
+                        return True
+        return False
 
     def _unlink(p: Path) -> None:
         if not p.is_file():
@@ -131,6 +153,8 @@ def _erase_prior_execution_artifacts(
             if p.resolve() in protect:
                 return
         except OSError:
+            return
+        if preserve_chunk_files and _is_chunk_artifact(p):
             return
         try:
             p.unlink()
@@ -154,6 +178,7 @@ def _erase_prior_execution_artifacts(
             seen.add(key)
             _unlink(p)
 
+    # Legacy temp subdir created by old-style split_pdf (always removed — not resumable)
     chunks_dir = parent / f"_chunks_{stem}"
     if chunks_dir.is_dir():
         try:
@@ -247,10 +272,18 @@ def _run_conversion(
 
         try:
             if chunk_size > 0:
-                from src.chunker import cleanup_chunks, merge_chunks, split_pdf
+                from src.chunker import merge_chunks, split_pdf
                 from src.logger_exec import append_row
 
-                all_chunk_list = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
+                # Chunks are written directly to output_dir with consistent naming
+                # ({stem}.chunk_NNN.pdf) so they persist for resume and inspection.
+                all_chunk_list = split_pdf(
+                    working_pdf,
+                    chunk_size=chunk_size,
+                    overlap=chunk_overlap,
+                    output_dir=output_dir,
+                    file_stem=output_stem,
+                )
                 total_available = len(all_chunk_list)
 
                 if max_chunks > 0 and max_chunks < total_available:
@@ -262,46 +295,86 @@ def _run_conversion(
                 else:
                     chunks = all_chunk_list
 
+                # Detect already-completed chunks from a prior (interrupted) run.
+                resumable: set[int] = {
+                    chunk_idx
+                    for chunk_idx, _, _, _ in chunks
+                    if (
+                        (output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md").exists()
+                        and (output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md").stat().st_size > 0
+                    )
+                }
+                if resumable:
+                    root.info(
+                        "ℹ️ Resume detected: %d/%d chunk(s) already complete — "
+                        "skipping those and continuing from chunk %d.",
+                        len(resumable), len(chunks),
+                        min(set(range(len(chunks))) - resumable, default=len(chunks)) + 1,
+                    )
+
                 chunk_markdowns: list[str] = []
                 chunk_metas: list[tuple[int, str, dict]] = []
 
                 for chunk_idx, chunk_path, start_page, end_page in chunks:
+                    chunk_num = chunk_idx + 1
+                    pages_label = f"{start_page}-{end_page}"
+                    chunk_md_path = output_dir / f"{output_stem}.chunk_{chunk_num:03d}.md"
+
+                    # --- Resume: load existing markdown, skip API call ---
+                    if chunk_idx in resumable:
+                        existing_md = chunk_md_path.read_text(encoding="utf-8")
+                        root.info(
+                            "ℹ️ Chunk %d/%d — pages %s — ✅ resuming from saved file",
+                            chunk_num, len(chunks), pages_label,
+                        )
+                        chunk_markdowns.append(existing_md)
+                        chunk_metas.append((chunk_idx, pages_label, {}))
+                        continue
+
                     root.info(
-                        "ℹ️ Chunk %d/%d — pages %d–%d",
-                        chunk_idx + 1, len(chunks), start_page, end_page,
+                        "ℹ️ Chunk %d/%d — pages %s",
+                        chunk_num, len(chunks), pages_label,
                     )
 
                     chunk_kwargs = dict(kwargs)
-                    if verbose and backend == "vertexai":
-                        chunk_stem = f"{output_stem}_chunk_{chunk_idx + 1:03d}"
-                        chunk_kwargs["verbose_save_dir"] = output_dir
-                        chunk_kwargs["verbose_file_stem"] = chunk_stem
+                    if backend == "vertexai":
+                        chunk_stem = f"{output_stem}.chunk_{chunk_num:03d}"
+                        if verbose:
+                            chunk_kwargs["verbose_save_dir"] = output_dir
+                            chunk_kwargs["verbose_file_stem"] = chunk_stem
 
                     try:
                         r = pipe.convert(chunk_path, validate_output=False, **chunk_kwargs)
                         chunk_markdowns.append(r.markdown)
-                        pages_label = f"{start_page}-{end_page}"
                         chunk_metas.append((chunk_idx, pages_label, r.metadata))
 
-                        # Save chunk markdown + PDF slice immediately so they survive partial failures
-                        if verbose:
-                            chunk_md_path = output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md"
-                            chunk_md_path.write_text(r.markdown, encoding="utf-8")
-                            chunk_pdf_path = output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.pdf"
-                            _shutil.copy2(chunk_path, chunk_pdf_path)
-                            root.debug(
-                                "Saved chunk %d markdown → %s, PDF → %s",
-                                chunk_idx + 1, chunk_md_path.name, chunk_pdf_path.name,
-                            )
+                        # Always save chunk markdown immediately — enables resume
+                        chunk_md_path.write_text(r.markdown, encoding="utf-8")
+                        root.debug("Saved chunk %d markdown → %s", chunk_num, chunk_md_path.name)
+
+                        # Always save per-chunk corrections log immediately
+                        corr = _save_chunk_corrections_report(
+                            r.metadata, output_dir, output_stem, chunk_num, pages_label,
+                        )
+                        if corr:
+                            root.debug("Saved chunk %d corrections → %s", chunk_num, corr.name)
 
                         _log_steps(pdf_path, chunk_idx, pages_label, r, append_row)
                     except Exception as exc:  # noqa: BLE001
                         root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
                         chunk_markdowns.append(
-                            f"\n\n> ⚠️ Chunk {chunk_idx + 1} (pages {start_page}–{end_page}) failed: {exc}\n\n"
+                            f"\n\n> ⚠️ Chunk {chunk_num} (pages {start_page}–{end_page}) failed: {exc}\n\n"
                         )
 
-                merged = merge_chunks(chunk_markdowns, chunk_overlap=chunk_overlap)
+                # Merge chunks with robust error handling
+                try:
+                    merged = merge_chunks(chunk_markdowns, chunk_overlap=chunk_overlap)
+                except Exception as exc:  # noqa: BLE001
+                    root.error(
+                        "❌ merge_chunks failed (%s) — falling back to plain join", exc,
+                    )
+                    merged = "\n\n---\n\n".join(m for m in chunk_markdowns if m and m.strip())
+
                 if backend == "vertexai" and chunk_metas:
                     combined_meta = {
                         **_aggregate_chunked_vertex_metadata(chunk_metas),
@@ -320,10 +393,6 @@ def _run_conversion(
                     backend_used=backend,
                     metadata=combined_meta,
                 )
-                try:
-                    cleanup_chunks(working_pdf)
-                except Exception:  # noqa: BLE001
-                    pass
             else:
                 from src.logger_exec import append_row
                 # If we pre-converted (verbose + non-PDF), use the saved PDF path
@@ -565,6 +634,7 @@ def _init_state() -> None:
         "ex_chunk_size": proc.chunk_size,
         "ex_chunk_overlap": proc.chunk_overlap,
         "ex_max_chunks": 0,
+        "ex_diminishing_returns": vai.diminishing_returns_enabled,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -581,6 +651,81 @@ def _clear_output() -> None:
 
 
 # ── Corrections report writer ───────────────────────────────────────────────────
+
+
+def _save_chunk_corrections_report(
+    meta: dict,
+    output_dir: Path,
+    stem: str,
+    chunk_num: int,
+    pages: str,
+) -> Path | None:
+    """Save an intermediate corrections log for a single chunk immediately after processing.
+
+    Creates ``{stem}.chunk_NNN.corrections.md`` next to the chunk markdown so
+    partial runs can be recovered and each chunk's quality history is preserved.
+    Returns the written path, or ``None`` if nothing was written.
+    """
+    if not meta:
+        return None
+    track_record: list[dict] = meta.get("refinement_log", [])
+    all_corrections: list[dict] = meta.get("all_corrections", [])
+    if not track_record and not all_corrections:
+        return None
+
+    from datetime import datetime, timezone
+
+    corr_path = output_dir / f"{stem}.chunk_{chunk_num:03d}.corrections.md"
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    model = meta.get("model", "unknown")
+    iters = meta.get("iterations_completed", 0)
+    final_verdict = meta.get("final_verdict", "N/A")
+
+    lines: list[str] = [
+        f"# Chunk {chunk_num} Corrections (pages {pages})",
+        "",
+        f"- **Generated**: {now}",
+        f"- **Model**: {model}",
+        f"- **Refinement pass(es)**: {iters}",
+        f"- **Final verdict**: {final_verdict}",
+        "",
+        "---",
+        "",
+        "## Track Record",
+        "",
+        "| Step | Type | Iter | Errors | Crit. | Mod. | Minor | Verdict | In tok | Out tok |",
+        "|------|------|------|--------|-------|------|-------|---------|--------|---------|",
+    ]
+
+    ext = meta.get("extraction_step", {})
+    in0 = int(ext.get("step_input_tokens", meta.get("total_input_tokens", 0)) or 0)
+    out0 = int(ext.get("step_output_tokens", meta.get("total_output_tokens", 0)) or 0)
+    lines.append(f"| 0 | extraction | — | 0 | 0 | 0 | 0 | — | {in0:,} | {out0:,} |")
+
+    for track in track_record:
+        it = int(track.get("iteration", track.get("step", 0)) or 0)
+        v = str(track.get("verdict", "N/A"))
+        icon = "✅ " if v == "CLEAN" else "⚠️ "
+        lines.append(
+            f"| {track.get('step', it)} | refinement | {it} | "
+            f"{int(track.get('errors_found', 0) or 0)} | "
+            f"{int(track.get('critical', 0) or 0)} | "
+            f"{int(track.get('moderate', 0) or 0)} | "
+            f"{int(track.get('minor', 0) or 0)} | "
+            f"{icon}{v} | "
+            f"{int(track.get('step_input_tokens', 0) or 0):,} | "
+            f"{int(track.get('step_output_tokens', 0) or 0):,} |"
+        )
+
+    if all_corrections:
+        lines += ["", "---", "", "## Corrections", ""]
+        for j, c in enumerate(all_corrections, 1):
+            lines += _format_correction(j, c, int(c.get("iteration", 0)))
+    else:
+        lines += ["", "*No individual correction details recorded.*"]
+
+    corr_path.write_text("\n".join(lines), encoding="utf-8")
+    return corr_path
 
 
 def _save_corrections_report(result: ConversionResult, output_path: Path) -> Path | None:
@@ -946,7 +1091,7 @@ def run() -> None:
                     )
 
             if st.session_state.get("vai_refine_iterations", 0) > 0:
-                vai_col7, _, __ = st.columns([2, 2, 2])
+                vai_col7, vai_col8, _ = st.columns([2, 2, 2])
                 with vai_col7:
                     st.number_input(
                         "Max errors to accept as CLEAN",
@@ -958,6 +1103,17 @@ def run() -> None:
                             "**-1**: stop on any CLEAN. **0**: only when 0 errors remain."
                         ),
                         key="vai_clean_stop_max_errors",
+                        disabled=running,
+                    )
+                with vai_col8:
+                    st.checkbox(
+                        "Diminishing returns stop",
+                        value=vai_cfg.diminishing_returns_enabled,
+                        help=(
+                            "Stop refinement early when two consecutive passes show no error reduction. "
+                            "Uncheck to always run all refinement passes regardless of improvement."
+                        ),
+                        key="vai_diminishing_returns",
                         disabled=running,
                     )
 
@@ -1002,6 +1158,7 @@ def run() -> None:
                     "auth_mode": auth_mode,
                     "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
                     "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", 0),
+                    "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", True),
                     "extraction_prompt_file": st.session_state.get(
                         "vai_extraction_prompt_file", "prompts/extraction.md"
                     ),
@@ -1093,6 +1250,8 @@ def run() -> None:
 
             _step_paths: list[Path] = []
             _raw_paths: list[Path] = []
+            _chunk_md_paths: list[Path] = []
+            _chunk_corr_paths: list[Path] = []
             _chunk_pdf_paths: list[Path] = []
             if st.session_state.get("ex_verbose", False) and result.backend_used == "vertexai":
                 # Save processed markdown snapshots after each step
@@ -1103,11 +1262,19 @@ def run() -> None:
                 # Collect raw response files already written by the backend
                 for stale in sorted(output_path.parent.glob(f"{output_path.stem}.raw_step_*.txt")):
                     _raw_paths.append(stale)
-                for stale in sorted(output_path.parent.glob(f"{output_path.stem}_chunk_*.raw_step_*.txt")):
+                # Updated pattern: chunk raw files now use dot-naming
+                for stale in sorted(output_path.parent.glob(f"{output_path.stem}.chunk_*.raw_step_*.txt")):
                     _raw_paths.append(stale)
-            if st.session_state.get("ex_verbose", False) and result.metadata.get("chunks", 0) > 1:
+            # Chunk artifacts (always present when chunking was used, not just verbose)
+            if result.metadata.get("chunks", 0) > 1:
                 for p in sorted(output_path.parent.glob(f"{output_path.stem}.chunk_*.pdf")):
                     _chunk_pdf_paths.append(p)
+                for p in sorted(output_path.parent.glob(f"{output_path.stem}.chunk_*.md")):
+                    # Exclude the final merged markdown itself
+                    if p != output_path:
+                        _chunk_md_paths.append(p)
+                for p in sorted(output_path.parent.glob(f"{output_path.stem}.chunk_*.corrections.md")):
+                    _chunk_corr_paths.append(p)
 
             corrections_path: Path | None = None
             if result.backend_used == "vertexai":
@@ -1132,7 +1299,7 @@ def run() -> None:
                 key="download_md_btn",
             )
 
-            if _step_paths or _raw_paths or _chunk_pdf_paths:
+            if _step_paths or _raw_paths or _chunk_pdf_paths or _chunk_md_paths or _chunk_corr_paths:
                 with st.expander("Saved artifacts"):
                     if _step_paths:
                         st.caption(f"Intermediate steps ({len(_step_paths)}): " +
@@ -1143,6 +1310,17 @@ def run() -> None:
                     if _chunk_pdf_paths:
                         st.caption(f"Chunk PDFs ({len(_chunk_pdf_paths)}): " +
                                    ", ".join(f"`{p.name}`" for p in _chunk_pdf_paths))
+                    if _chunk_md_paths:
+                        st.caption(
+                            f"Chunk markdowns ({len(_chunk_md_paths)}) — "
+                            "kept for resume: " +
+                            ", ".join(f"`{p.name}`" for p in _chunk_md_paths)
+                        )
+                    if _chunk_corr_paths:
+                        st.caption(
+                            f"Per-chunk corrections ({len(_chunk_corr_paths)}): " +
+                            ", ".join(f"`{p.name}`" for p in _chunk_corr_paths)
+                        )
             if corrections_path is not None:
                 st.caption(f"Corrections log: `{corrections_path.name}`")
 
