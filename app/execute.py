@@ -30,12 +30,20 @@ from src.pipeline import Pipeline
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def _list_prompts() -> list[str]:
-    """Return all .md files in prompts/ as paths relative to the project root."""
+def _list_prompts_by_prefix(prefix: str) -> list[str]:
+    """Return all .md files in prompts/ whose filename starts with *prefix*."""
     return sorted(
         str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
     )
+
+
+def _list_extraction_prompts() -> list[str]:
+    return _list_prompts_by_prefix("extraction")
+
+
+def _list_refinement_prompts() -> list[str]:
+    return _list_prompts_by_prefix("refinement")
 
 
 # Gemini model options shown in the UI (order = dropdown order)
@@ -1069,13 +1077,14 @@ def run() -> None:
                     key="vai_refine_iterations",
                     disabled=running,
                 )
-            _prompts = _list_prompts()
+            _ext_prompts = _list_extraction_prompts()
+            _ref_prompts = _list_refinement_prompts()
             with vai_col5:
                 _ext_default = vai_cfg.extraction_prompt
                 st.selectbox(
                     "Extraction prompt",
-                    _prompts,
-                    index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
+                    _ext_prompts,
+                    index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
                     key="vai_extraction_prompt_file",
                     disabled=running,
                 )
@@ -1084,8 +1093,8 @@ def run() -> None:
                     _ref_default = vai_cfg.refinement_prompt
                     st.selectbox(
                         "Refinement prompt",
-                        _prompts,
-                        index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
+                        _ref_prompts,
+                        index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
                         key="vai_refinement_prompt_file",
                         disabled=running,
                     )

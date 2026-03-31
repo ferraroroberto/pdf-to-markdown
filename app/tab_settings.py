@@ -11,12 +11,20 @@ from src.config import load_settings, save_settings
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def _list_prompts() -> list[str]:
-    """Return all .md files in prompts/ as paths relative to the project root."""
+def _list_prompts_by_prefix(prefix: str) -> list[str]:
+    """Return all .md files in prompts/ whose filename starts with *prefix*."""
     return sorted(
         str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
     )
+
+
+def _list_extraction_prompts() -> list[str]:
+    return _list_prompts_by_prefix("extraction")
+
+
+def _list_refinement_prompts() -> list[str]:
+    return _list_prompts_by_prefix("refinement")
 
 
 def run() -> None:
@@ -64,17 +72,18 @@ def run() -> None:
                 ),
             )
 
-        _prompts = _list_prompts()
+        _ext_prompts = _list_extraction_prompts()
+        _ref_prompts = _list_refinement_prompts()
         s4, s5 = st.columns([3, 3])
         with s4:
             new_ext_prompt: str = st.selectbox(
-                "Default Extraction Prompt", _prompts,
-                index=_prompts.index(vai.extraction_prompt) if vai.extraction_prompt in _prompts else 0,
+                "Default Extraction Prompt", _ext_prompts,
+                index=_ext_prompts.index(vai.extraction_prompt) if vai.extraction_prompt in _ext_prompts else 0,
             )
         with s5:
             new_ref_prompt: str = st.selectbox(
-                "Default Refinement Prompt", _prompts,
-                index=_prompts.index(vai.refinement_prompt) if vai.refinement_prompt in _prompts else 0,
+                "Default Refinement Prompt", _ref_prompts,
+                index=_ref_prompts.index(vai.refinement_prompt) if vai.refinement_prompt in _ref_prompts else 0,
             )
 
         st.markdown("---")
