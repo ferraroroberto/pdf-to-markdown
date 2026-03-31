@@ -15,43 +15,53 @@ File Input (PDF, Word, PowerPoint, Excel, Image)
     │       └─► Per-chunk: Extract → Post-process → (Validate)
     │           [Verbose] Save raw AI response → {name}.raw_step_NN.txt
     │           [Verbose] Save chunk markdown + slice PDF → {name}.chunk_NNN.md / .pdf
+    │           [Always]  Save corrections report → {name}.chunk_NNN.corrections.md
+    ├─► Resume support: existing chunk .md files are loaded from disk, skipped
     ├─► Merge chunks into final document
     ├─► Log execution row to tmp/exec_log.jsonl
     │
     └─► Markdown Output + ValidationReport + token/cost estimate
 ```
 
-## Project structure
+## Project Structure
 
 ```
-pdf-to-markdown/
-├── .venv/                  # Virtual environment
+pdf2md/
+├── .venv/                  # Virtual environment (not committed)
 ├── app/
 │   ├── app.py              # Streamlit entry point (4 tabs, sidebar globals)
-│   ├── execute.py          # Convert File tab
+│   ├── execute.py          # Convert File tab (resume, per-chunk corrections)
 │   ├── tab_batch.py        # Batch Convert tab
 │   ├── tab_log.py          # History tab
-│   ├── tab_settings.py     # Settings tab
+│   ├── tab_settings.py     # Settings tab (full config.json editor)
 │   └── .streamlit/
+│       └── config.toml     # Streamlit theme
 ├── prompts/
-│   ├── extraction.md       # Universal prompt (default): text, tables, and visuals
-│   ├── extraction_text.md  # Specialized prompt: text and tables only, images skipped
-│   └── refinement.md       # Iterative quality audit prompt
+│   ├── extraction.md       # Universal prompt: text, tables, and meaningful visuals
+│   ├── extraction_text.md  # Text and tables only, images skipped
+│   ├── extraction_rag.md   # RAG-optimized extraction (default)
+│   ├── refinement.md       # Iterative quality audit (skeptical-bias)
+│   └── refinement_rag.md   # RAG-optimized convergent refinement (default)
 ├── src/
 │   ├── backends/           # Extraction backends (Vertex AI, Marker, pdfplumber)
+│   │   ├── __init__.py     # Backend registry and auto-selection
+│   │   ├── base.py         # Shared backend interface
+│   │   ├── vertexai_backend.py   # Google Gemini / Vertex AI extraction
+│   │   ├── marker_backend.py     # Marker ML pipeline
+│   │   └── pdfplumber_backend.py # Heuristic text extraction
 │   ├── auth.py             # Authentication factory (api | gcloud)
 │   ├── batch.py            # Folder discovery and batch orchestrator
 │   ├── chunker.py          # PDF page splitter and markdown merger
 │   ├── classifier.py       # Born-digital vs scanned detection
-│   ├── cli.py              # CLI entry point
+│   ├── cli.py              # CLI entry point (Click + Rich)
 │   ├── config.json         # Runtime configuration (all settings)
-│   ├── config.py           # Settings loader / saver
-│   ├── file_converter.py   # Pre-conversion: Office/image → PDF (Vertex AI only)
+│   ├── config.py           # Settings dataclass loader / saver
+│   ├── file_converter.py   # Pre-conversion: Office/image → PDF
 │   ├── logger_exec.py      # Structured JSONL execution logger
-│   ├── logging_config.py   # Centralised logging setup (console + rotating file)
+│   ├── logging_config.py   # Centralised logging (console + rotating file)
 │   ├── models.py           # ConversionResult, ChunkResult, BatchResult, ValidationReport
 │   ├── pipeline.py         # Single-file orchestrator
-│   ├── postprocess.py      # Cleaning pipeline
+│   ├── postprocess.py      # Markdown cleaning pipeline
 │   ├── validation.py       # Quality validation
 │   └── vertexai_pricing.py # Gemini pricing fetch and cache
 ├── testing/
@@ -61,12 +71,16 @@ pdf-to-markdown/
 │   ├── test_postprocess.py # Markdown cleaning pipeline
 │   ├── test_file_converter.py  # File type detection, image→PDF conversion
 │   ├── test_chunker.py     # PDF splitting and markdown merging
-│   └── test_validation.py  # Quality validation helpers
+│   ├── test_validation.py  # Quality validation helpers
+│   └── test_vertexai_backend.py # Vertex AI backend (mocked, no credentials)
 ├── tmp/
 │   ├── exec_log.jsonl      # Persistent execution log (append-only)
 │   └── pdf2md_*.log        # Rotating debug log files
-├── launch_app.bat
+├── launch_app.bat          # Windows launcher for Streamlit
+├── launch_app.sh           # Linux/macOS launcher for Streamlit
+├── .env.example            # Template for GCP credentials
 ├── requirements.txt
+├── LICENSE                 # MIT
 └── README.md
 ```
 
@@ -74,7 +88,9 @@ pdf-to-markdown/
 
 ```bash
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m pip install -r requirements.txt   # Windows
+# or
+.venv/bin/pip install -r requirements.txt                      # Linux/macOS
 ```
 
 Copy `.env.example` to `.env` and set your credentials:
@@ -100,15 +116,17 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 ### Web UI (Streamlit)
 
 ```bash
-.venv\Scripts\streamlit.exe run app/app.py
-# or double-click launch_app.bat on Windows
+.venv\Scripts\streamlit.exe run app/app.py            # Windows
+# or double-click launch_app.bat
+# or
+./launch_app.sh                                        # Linux/macOS
 ```
 
 **Tabs:**
 
 | Tab | Purpose |
 |---|---|
-| Convert File | Single-file conversion with file picker and live log |
+| Convert File | Single-file conversion with file picker, live log, and resume |
 | Batch Convert | Folder processing with results table |
 | History | Browse and filter `exec_log.jsonl` |
 | Settings | Edit `config.json` from the UI |
@@ -121,6 +139,7 @@ GOOGLE_API_KEY=your-api-key        # for auth_mode=api
 - The **Execution Log** appears below the action button in chronological order with auto-scroll.
 - Results lead with the converted markdown preview and a **Download Markdown** button.
 - **Dry run** is a toggle next to the main action button.
+- Prompt dropdowns are **filtered by type**: extraction prompts only list files starting with `extraction`, refinement prompts only list files starting with `refinement`.
 
 ### CLI
 
@@ -245,13 +264,15 @@ The **Vertex AI backend** can process Word, PowerPoint, and image files in addit
 
 ## Prompts
 
-The Vertex AI backend uses Markdown prompt files from the `prompts/` folder. Both the UI and CLI discover all `.md` files in that folder automatically — add a new file there and it appears as a selectable option immediately.
+The Vertex AI backend uses Markdown prompt files from the `prompts/` folder. Both the UI and CLI discover all `.md` files in that folder automatically — add a new file there and it appears as a selectable option immediately. Prompt dropdowns are filtered by type: extraction selectors only show files whose name starts with `extraction`, refinement selectors only show files starting with `refinement`.
 
 | File | Purpose |
 |---|---|
-| `prompts/extraction.md` | **Default.** Universal prompt: reads like a human expert — extracts text, tables, and meaningful visuals (UI screenshots, charts, diagrams); omits decorative elements silently. |
-| `prompts/extraction_text.md` | Specialized: text and tables only. All images are skipped. Best for financial reports, contracts, and pure-text documents. |
-| `prompts/refinement.md` | Iterative quality audit. Used when `refine_iterations > 0`. |
+| `prompts/extraction_rag.md` | **Default.** RAG-optimized: factual accuracy and structural clarity for AI retrieval. Prioritises exact text, exact numbers, complete tables, and useful image descriptions. |
+| `prompts/extraction.md` | Universal prompt: reads like a human expert — extracts text, tables, and meaningful visuals; omits decorative elements silently. |
+| `prompts/extraction_text.md` | Text and tables only. All images are skipped. Best for financial reports, contracts, and pure-text documents. |
+| `prompts/refinement_rag.md` | **Default.** Convergent RAG refinement: objective audit with a high bar — only flags errors that would cause an AI to retrieve or answer incorrectly. `CLEAN` is the default verdict. |
+| `prompts/refinement.md` | Skeptical-bias iterative audit. Approaches every document looking for what was missed or wrong. |
 
 **Switching prompts at runtime:**
 - **UI**: Use the "Extraction prompt" and "Refinement prompt" dropdowns under **Advanced options** in the Convert File or Batch Convert tabs.
@@ -267,12 +288,13 @@ All settings live in `src/config.json`. CLI flags and UI selections override the
   "vertexai": {
     "project_id": "",
     "location": "europe-west3",
-    "model": "gemini-2.5-pro",
+    "model": "gemini-3.1-flash-lite-preview",
     "auth_mode": "api",
     "refine_iterations": 0,
     "clean_stop_max_errors": 0,
-    "extraction_prompt": "prompts/extraction.md",
-    "refinement_prompt": "prompts/refinement.md"
+    "diminishing_returns_enabled": true,
+    "extraction_prompt": "prompts/extraction_rag.md",
+    "refinement_prompt": "prompts/refinement_rag.md"
   },
   "processing": {
     "backend": "vertexai",
@@ -314,9 +336,23 @@ For large documents, set `--chunk-size N` (or `chunk_size` in config) to split i
 - `chunk_overlap` (default 1) adds trailing pages from the previous chunk to the next for context continuity.
 - At merge time, overlapped pages that were re-extracted by the next chunk are automatically deduplicated. Exact line matches are stripped first; if the LLM produced minor differences (added emoji, punctuation, reformatted URLs), fuzzy matching (≥ 85% character similarity) removes the duplicate tail from the previous chunk.
 - `--max-chunks N` (UI: **Max chunks** field) stops after N chunks — useful for testing large documents without processing the whole file.
-- Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output.
-- Temp chunk files are written to `_chunks_<stem>/` next to the source PDF and removed after the run (verbose mode also copies each slice to `{stem}.chunk_NNN.pdf` beside the output).
-- Starting a new **Convert** on the same file removes prior outputs for that basename first (`{stem}.*`, `{stem}_chunk_*`, and `_chunks_<stem>/`); the source PDF is never deleted. With **Verbose** on, each deleted path is logged in the execution log.
+- Chunks are merged with a `---` separator. Failed chunks are skipped with a warning embedded in the output. If the merge itself fails, a plain newline-separator join is used as fallback.
+- Chunk PDF files are written as `{stem}.chunk_NNN.pdf` next to the source file (flat naming, no subdirectory).
+- Starting a new **Convert** on the same file removes prior outputs for that basename first; existing chunk `.md` files are preserved by default so that **resume** can pick them up. Your original source file is never deleted.
+
+### Resume from interrupted run
+
+If a conversion is interrupted (API timeout, crash, manual stop), chunk `.md` files already written to disk are kept. On the next run of the same file, existing `{stem}.chunk_NNN.md` files are detected, loaded from disk, and **skipped** — only the missing chunks are sent to the API. This saves both time and cost for large documents.
+
+## Diminishing Returns
+
+When `diminishing_returns_enabled` is `true` (default), the refinement loop stops early if a pass produces no improvements or returns a `CLEAN` verdict. This avoids wasting API calls on already-good output.
+
+To force all refinement passes to run regardless — for example, on critical documents where you want maximum scrutiny — set `diminishing_returns_enabled` to `false` in `config.json`, uncheck it in the Settings tab, or toggle it in the Advanced options of the Convert File / Batch Convert tabs.
+
+## Per-chunk Corrections Reports
+
+After each chunk finishes processing, a corrections report is written to `{stem}.chunk_NNN.corrections.md`. These reports are generated independently of verbose mode and contain the detailed track record and corrections for each chunk. They appear in the "Saved artifacts" expander in the UI when processing multi-chunk documents.
 
 ## Execution Log
 
@@ -439,13 +475,14 @@ Clicking **Convert** automatically clears the previous result and log from the U
 | `{name}.step_NN.md` | Vertex AI, verbose + refine | Processed markdown after refinement pass N |
 | `{name}_chunk_001.raw_step_*.txt` | Vertex AI, verbose + chunking | Raw responses per chunk |
 | `{name}.chunk_001.md` | Verbose + chunking | Markdown for chunk 1 (saved immediately after each chunk) |
-| `{name}.chunk_001.pdf` | Verbose + chunking | PDF page-range slice for chunk 1 (copy of the temp chunk file) |
+| `{name}.chunk_001.pdf` | Verbose + chunking | PDF page-range slice for chunk 1 |
+| `{name}.chunk_001.corrections.md` | Chunking (always) | Corrections report for chunk 1 |
 
 Raw response files are written to disk **immediately after each API call**, so if a later step crashes you can still inspect what was returned and diagnose parsing issues.
 
 ## Vertex AI Iterative Refinement
 
-Set `--refine-iterations N` (or slider in UI) to run N self-correction passes after extraction. Each pass sends the PDF + current Markdown back to Gemini, which returns a structured JSON correction report. Stops early on `CLEAN` or diminishing returns.
+Set `--refine-iterations N` (or slider in UI) to run N self-correction passes after extraction. Each pass sends the PDF + current Markdown back to Gemini, which returns a structured JSON correction report. Stops early on `CLEAN` or diminishing returns (unless `diminishing_returns_enabled` is `false`).
 
 Recommendation: 1–2 passes for most documents; 3–5 for complex tables / financial reports.
 
@@ -461,13 +498,15 @@ testing/
 ├── test_postprocess.py      # All markdown cleaning steps + postprocess() integration
 ├── test_file_converter.py   # File type detection, image→PDF conversion, ensure_pdf context manager
 ├── test_chunker.py          # PDF splitting, merge_chunks, cleanup
-└── test_validation.py       # Similarity scoring, heading/table/list counting, row consistency
+├── test_validation.py       # Similarity scoring, heading/table/list counting, row consistency
+└── test_vertexai_backend.py # Vertex AI backend (mocked/stubbed — no credentials needed)
 ```
 
 ### Run the tests
 
 ```bash
-.venv\Scripts\python.exe -m pytest testing/ -v
+.venv\Scripts\python.exe -m pytest testing/ -v                                # Windows
+.venv/bin/python -m pytest testing/ -v                                         # Linux/macOS
 ```
 
 Run with coverage:
@@ -488,6 +527,135 @@ Run a specific module:
 - **No fixture files** — test PDFs and images are generated in-memory by `conftest.py` using PyMuPDF.
 - **Self-contained** — each test class follows Arrange-Act-Assert and has a single focus.
 - **Edge cases documented** — tests explicitly cover boundary conditions (empty inputs, threshold boundaries, missing dependencies).
+
+---
+
+## Evolution Log — What Changed and Why
+
+This section traces the project's development through its major iterations. Each step documents the problem that was solved, the design decision behind it, and the lesson learned. It serves as both a changelog and an instructional guide for understanding the architecture.
+
+### Step 1 — Initial Pipeline (PR #1)
+
+**Problem:** We needed a way to convert PDF documents into clean Markdown for LLM consumption (RAG, summarization, Q&A). No existing tool produced output clean enough for production LLM pipelines.
+
+**What was built:** The foundational `pdf2md` pipeline — a Streamlit UI with a CLI, a pluggable backend system (Marker, pdfplumber, Docling), and a post-processing layer that cleans up raw extraction output into token-efficient Markdown.
+
+**Key design decisions:**
+- **Pluggable backends** — different PDFs need different extractors. Born-digital PDFs work fine with heuristic extractors (pdfplumber), while scanned documents need OCR (Marker). The `BaseBackend` interface and registry pattern lets us add backends without touching the pipeline.
+- **Post-processing pipeline** — raw extraction output is never clean enough. The `postprocess.py` module chains cleaning steps (normalise whitespace, fix broken tables, strip noise) into a deterministic pipeline that runs after every backend.
+- **Config-first architecture** — all settings live in `config.json` so the same tool works in different contexts without code changes.
+
+**Lesson:** Separation of concerns (extraction vs cleaning vs orchestration) makes each piece independently testable and replaceable. Starting with a pluggable backend system from day one avoided a painful refactor later.
+
+### Step 2 — Vertex AI Backend and Refinement (commits before PR #3)
+
+**Problem:** Heuristic and ML-based backends (pdfplumber, Marker) produced acceptable output for simple PDFs, but struggled with complex layouts, nested tables, and documents mixing text with meaningful visuals. We needed a smarter extraction approach.
+
+**What was built:** A Vertex AI (Gemini) backend that sends the entire PDF to a multimodal LLM with a structured extraction prompt. The LLM "reads" the document as a human would and produces structured Markdown. An iterative refinement loop was added: after initial extraction, the PDF + current Markdown are sent back to the model for self-correction passes.
+
+**Key design decisions:**
+- **LLM as primary extractor** — instead of fighting heuristics for every edge case, delegate the hard work to a model that understands layout, context, and semantics.
+- **Prompt-driven extraction** — the extraction behavior is controlled by editable Markdown prompt files, not code. This means we can tune extraction quality without changing the codebase.
+- **Dual auth modes** (`api` vs `gcloud`) — the `api` mode (API key) is fast for personal use; `gcloud` mode (ADC / service account) is production-grade. The `auth.py` factory hides this choice from the rest of the codebase.
+
+**Lesson:** Multimodal LLMs transformed the quality ceiling. Documents that were impossible with heuristics (scanned forms, mixed-content slides) became tractable. But raw LLM output still needs the same post-processing pipeline — the model is smart but not consistent.
+
+### Step 3 — Refinement Optimization (PR #3)
+
+**Problem:** The refinement loop accumulated error logs from all previous iterations and passed the full history to each new pass. This caused confusion: the model would sometimes "fix" things that had already been corrected, or get distracted by stale error reports.
+
+**What was fixed:** Each refinement pass now only sees the PDF and the current Markdown — no accumulated error history. The model independently audits the current state each time. Errors naturally reduce as the Markdown improves across iterations.
+
+**Lesson:** Stateless refinement is more robust than stateful. Giving the model a clean view each time produces more consistent improvements than feeding it a growing correction log. Simpler context = better reasoning.
+
+### Step 4 — Multi-file Type Support + Test Suite (PR #5)
+
+**Problem:** Real-world document pipelines include Word documents, PowerPoint presentations, Excel spreadsheets, and images — not just PDFs. Users had to pre-convert these manually before running the tool.
+
+**What was built:**
+- A `file_converter.py` module that detects non-PDF inputs and converts them to PDF automatically (LibreOffice for Office documents, PyMuPDF for images) before the extraction pipeline runs.
+- A comprehensive test suite (`testing/`) with in-memory PDF and image generators — no fixture files, no API credentials needed.
+
+**Key design decisions:**
+- **Pre-conversion to PDF** — rather than teaching every backend to handle every format, normalise all inputs to PDF first. This keeps backends simple and focused on one format.
+- **In-memory test fixtures** — `conftest.py` generates test PDFs and PNGs using PyMuPDF at runtime. No fixture files to maintain, no binary blobs in the repo, and tests run anywhere without setup.
+
+**Lesson:** Normalising inputs early in the pipeline (the "funnel" pattern) is far more maintainable than handling N formats in M backends. The test suite design — zero external dependencies, zero fixture files — ensures tests stay green across environments.
+
+### Step 5 — Prompt Redesign (PR #6)
+
+**Problem:** The original extraction prompt was generic and produced inconsistent results across document types. Image handling was rule-based ("[Figure: ...]" placeholders) rather than semantic, creating noise in the output.
+
+**What was built:**
+- `extraction.md` — reframed as a "universal human reader" prompt that extracts meaningful content (text, tables, UI screenshots, diagrams) and omits decorative elements without leaving placeholder noise.
+- `extraction_text.md` — a specialised prompt for text-heavy documents (contracts, financial reports) that explicitly skips all images.
+- Dynamic prompt discovery: the UI and CLI scan the `prompts/` folder for `.md` files at startup, so adding a new prompt is just dropping a file.
+
+**Lesson:** Prompt engineering is as important as code architecture. A well-structured prompt with clear priorities produces dramatically better output than a list of rules. The "read like a human expert" framing gave the model the right mental model for extraction.
+
+### Step 6 — Verbose Mode and Universal Chunking (PR #7)
+
+**Problem:** Large PDFs (100+ pages) exceeded LLM context windows. When conversions failed partway through, there was no way to inspect what the API returned before the crash. Chunking was PDF-only and didn't work with pre-converted files.
+
+**What was built:**
+- **Verbose mode** in the UI saves every raw API response to disk immediately (`{name}.raw_step_NN.txt`), so partial failures can be diagnosed.
+- **Universal chunking** — non-PDF files are converted to PDF first, then split. A 50-page PowerPoint with `--chunk-size 10` produces 5 chunks.
+- **`--max-chunks N`** parameter — process only the first N chunks, useful for testing large documents without burning through the entire file.
+
+**Lesson:** Observability is a feature. When you're sending documents to a cloud API, you need to see exactly what was sent and returned at every step. Saving raw responses immediately (not after all steps complete) is the only way to debug partial failures.
+
+### Step 7 — Dual-handler Logging System (PR #9)
+
+**Problem:** The console log was either too noisy (DEBUG during development) or too quiet (INFO in production). There was no persistent record of what happened across runs, and no way to correlate log messages from the same execution.
+
+**What was built:**
+- A centralised logging setup (`logging_config.py`) with two independent streams: console at INFO (or DEBUG with `--verbose`) and a rotating file handler at DEBUG that always captures everything.
+- Every execution is tagged with an 8-char `run_id` for correlation and auditing.
+- API call timing is logged at INFO level with latency, model, and token breakdowns.
+
+**Key design decisions:**
+- **Console: clean / File: everything** — the UI stays readable while the file captures the full story. `--verbose` promotes the console to DEBUG for real-time debugging.
+- **Run ID correlation** — `grep a1b2c3d4 tmp/pdf2md_*.log` extracts every message from a single execution, even across modules.
+- **Rotating file handler** — caps at 10 MB with 5 backups, so log files don't fill the disk.
+
+**Lesson:** Two-stream logging (clean console + full-detail file) is the right pattern for any tool with a UI. The run ID concept came from wanting to answer "what exactly happened in that conversion that failed yesterday?" — without it, grep across log files is nearly useless.
+
+### Step 8 — Settings Tab and Logging Config (PR #10)
+
+**Problem:** The logging configuration (`log_dir`, `log_max_bytes`, `log_backup_count`) was only editable by hand in `config.json`. Users wanted to change logging settings from the Streamlit UI like every other setting.
+
+**What was fixed:** All logging configuration keys were exposed in the Settings tab. The entire `config.json` is now fully editable from the UI.
+
+**Lesson:** If a setting exists in the config file but isn't in the UI, users will forget it exists. Every configurable value should be accessible through the same interface.
+
+### Step 9 — UI/UX Overhaul and Cross-platform Support (PR #11)
+
+**Problem:** The app was Windows-only (batch scripts, Windows paths). The UI had usability issues: inconsistent layouts, confusing option grouping, and fragile JSON parsing that crashed on malformed API responses.
+
+**What was built:**
+- **Cross-platform support** — `launch_app.sh` for Linux/macOS, path handling with `pathlib.Path` throughout, conditional `pywin32` dependency.
+- **Robust JSON repair** — the Vertex AI backend now handles malformed JSON responses (truncated, trailing commas, unquoted keys) instead of crashing.
+- **UI/UX improvements** — consistent tab layouts, better option grouping, clearer labels.
+
+**Lesson:** Cross-platform support should be built in from the start, but when it isn't, `pathlib.Path` makes the retrofit manageable. JSON repair for LLM responses is not optional — models produce invalid JSON often enough that it needs to be handled gracefully.
+
+### Step 10 — Diminishing Returns, Resume, and RAG Prompts (PR #12)
+
+**Problem:** Several issues converged: (1) refinement sometimes wasted API calls when the output was already clean, (2) large multi-chunk conversions that failed partway through had to restart from scratch, (3) the default prompts weren't optimised for the primary use case (RAG knowledge bases).
+
+**What was built:**
+- **Diminishing returns control** — a `diminishing_returns_enabled` flag (default: `true`) that lets the refinement loop stop early when no improvements are found. Can be disabled for critical documents.
+- **Resume from interrupted run** — before calling the API, the pipeline checks for existing `{stem}.chunk_NNN.md` files on disk. Complete chunks are loaded and skipped. Only missing chunks are processed.
+- **Per-chunk corrections reports** — `{stem}.chunk_NNN.corrections.md` is written after each chunk, independent of verbose mode, capturing the full correction track record.
+- **RAG-optimised prompts** — `extraction_rag.md` and `refinement_rag.md` became the new defaults. The extraction prompt prioritises factual accuracy for AI retrieval; the refinement prompt uses an objective "high bar" approach that only flags errors that would cause wrong AI answers.
+- **Filtered prompt selectors** — UI dropdowns now only show extraction prompts for extraction and refinement prompts for refinement, preventing accidental cross-assignment.
+
+**Key design decisions:**
+- **Resume is opt-in by default** — chunk files are preserved during cleanup unless the user explicitly removes them. This makes resume the natural path after any failure.
+- **Corrections reports are always written** — not gated on verbose mode, because understanding what was corrected in each chunk is essential for quality assurance, not just debugging.
+- **RAG as default prompt** — the majority of users are building RAG pipelines, so the default should be optimised for that. The universal and text-only prompts remain available for other use cases.
+
+**Lesson:** Resume capability transforms the economics of large-document processing. A 200-page document split into 20 chunks no longer needs to restart from chunk 1 when chunk 15 fails. The cost of implementing resume (checking for existing files before API calls) was minimal compared to the cost of re-processing entire documents. Convergent refinement (objective, high-bar auditing) produces better results than skeptical refinement (looking for problems) because the model stops over-correcting things that were already correct.
 
 ## License
 
