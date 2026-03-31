@@ -26,12 +26,20 @@ from src.models import ChunkResult
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def _list_prompts() -> list[str]:
-    """Return all .md files in prompts/ as paths relative to the project root."""
+def _list_prompts_by_prefix(prefix: str) -> list[str]:
+    """Return all .md files in prompts/ whose filename starts with *prefix*."""
     return sorted(
         str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob("*.md")
+        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
     )
+
+
+def _list_extraction_prompts() -> list[str]:
+    return _list_prompts_by_prefix("extraction")
+
+
+def _list_refinement_prompts() -> list[str]:
+    return _list_prompts_by_prefix("refinement")
 
 
 # Gemini model options
@@ -131,6 +139,7 @@ def _run_batch_worker(
                 "auth_mode": backend_kwargs.get("auth_mode", "api"),
                 "refine_iterations": backend_kwargs.get("refine_iterations", 0),
                 "clean_stop_max_errors": backend_kwargs.get("clean_stop_max_errors", 0),
+                "diminishing_returns_enabled": backend_kwargs.get("diminishing_returns_enabled", True),
                 "extraction_prompt": backend_kwargs.get("extraction_prompt_file", "prompts/extraction.md"),
                 "refinement_prompt": backend_kwargs.get("refinement_prompt_file", "prompts/refinement.md"),
             },
@@ -180,6 +189,7 @@ def _init_state() -> None:
         "bt_chunk_overlap": cfg.processing.chunk_overlap,
         "bt_recursive": cfg.batch.recursive,
         "bt_verbose": False,
+        "bt_diminishing_returns": cfg.vertexai.diminishing_returns_enabled,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -328,20 +338,32 @@ def run() -> None:
                 "Refinement passes", 0, 10, vai.refine_iterations,
                 key="bt_refine_iterations", disabled=running,
             )
-        _prompts = _list_prompts()
+            if st.session_state.get("bt_refine_iterations", 0) > 0:
+                st.checkbox(
+                    "Diminishing returns stop",
+                    value=vai.diminishing_returns_enabled,
+                    help=(
+                        "Stop refinement early when two consecutive passes show no error reduction. "
+                        "Uncheck to always run all passes."
+                    ),
+                    key="bt_diminishing_returns",
+                    disabled=running,
+                )
+        _ext_prompts = _list_extraction_prompts()
+        _ref_prompts = _list_refinement_prompts()
         with vb5:
             _ext_default = vai.extraction_prompt
             bt_extract_prompt: str = st.selectbox(
-                "Extraction prompt", _prompts,
-                index=_prompts.index(_ext_default) if _ext_default in _prompts else 0,
+                "Extraction prompt", _ext_prompts,
+                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
                 key="bt_extraction_prompt", disabled=running,
             )
         with vb6:
             if st.session_state.get("bt_refine_iterations", 0) > 0:
                 _ref_default = vai.refinement_prompt
                 bt_refine_prompt: str = st.selectbox(
-                    "Refinement prompt", _prompts,
-                    index=_prompts.index(_ref_default) if _ref_default in _prompts else 0,
+                    "Refinement prompt", _ref_prompts,
+                    index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
                     key="bt_refinement_prompt", disabled=running,
                 )
 
@@ -385,6 +407,7 @@ def run() -> None:
                 "auth_mode": auth_mode,
                 "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
                 "clean_stop_max_errors": vai.clean_stop_max_errors,
+                "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
                 "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
                 "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),
                 "dry_run": bt_dry_run,

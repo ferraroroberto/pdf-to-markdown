@@ -47,6 +47,8 @@ def split_pdf(
     pdf_path: Path,
     chunk_size: int,
     overlap: int = 1,
+    output_dir: Path | None = None,
+    file_stem: str | None = None,
 ) -> list[tuple[int, Path, int, int]]:
     """Split *pdf_path* into overlapping page-range chunks.
 
@@ -59,12 +61,19 @@ def split_pdf(
     overlap:
         Number of trailing pages from the previous chunk to prepend to the next
         chunk for context continuity.  Default: 1.
+    output_dir:
+        If provided together with *file_stem*, chunk PDFs are written directly
+        to this directory (no ``_chunks_`` sub-folder) using the naming
+        ``{file_stem}.chunk_NNN.pdf`` (1-based, zero-padded to 3 digits).
+        When omitted the legacy ``_chunks_{stem}/chunk_NNN.pdf`` layout is used.
+    file_stem:
+        Base name used for chunk file names when *output_dir* is given.
 
     Returns
     -------
-    list of (chunk_idx, tmp_pdf_path, start_page, end_page)
+    list of (chunk_idx, chunk_pdf_path, start_page, end_page)
         ``start_page`` and ``end_page`` are 0-based, inclusive of overlap.
-        Temp PDFs are written to a ``_chunks/`` directory next to *pdf_path*.
+        ``chunk_idx`` is 0-based.
     """
     try:
         import pymupdf as fitz  # type: ignore[import]
@@ -92,8 +101,12 @@ def split_pdf(
         raise ValueError(f"PDF has no pages: {pdf_path}")
 
     # Build page ranges for each chunk
-    chunks_dir = pdf_path.parent / f"_chunks_{pdf_path.stem}"
-    chunks_dir.mkdir(exist_ok=True)
+    use_flat_layout = output_dir is not None and file_stem is not None
+    if use_flat_layout:
+        output_dir.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+    else:
+        chunks_dir = pdf_path.parent / f"_chunks_{pdf_path.stem}"
+        chunks_dir.mkdir(exist_ok=True)
 
     results: list[tuple[int, Path, int, int]] = []
     chunk_idx = 0
@@ -104,7 +117,10 @@ def split_pdf(
         actual_start = max(0, content_start - overlap) if chunk_idx > 0 else 0
         actual_end = min(content_start + chunk_size - 1, total_pages - 1)
 
-        chunk_path = chunks_dir / f"chunk_{chunk_idx:03d}.pdf"
+        if use_flat_layout:
+            chunk_path = output_dir / f"{file_stem}.chunk_{chunk_idx + 1:03d}.pdf"  # type: ignore[operator]
+        else:
+            chunk_path = chunks_dir / f"chunk_{chunk_idx:03d}.pdf"
 
         # Extract the page range into a new PDF
         sub_doc = fitz.open()
