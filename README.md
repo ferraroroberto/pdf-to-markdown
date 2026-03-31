@@ -78,6 +78,8 @@ pdf2md/
 │   └── pdf2md_*.log        # Rotating debug log files
 ├── launch_app.bat          # Windows launcher for Streamlit
 ├── launch_app.sh           # Linux/macOS launcher for Streamlit
+├── launch_server.bat       # Windows: Streamlit + Cloudflare Tunnel (public access)
+├── launch_server.sh        # Linux/macOS: Streamlit + Cloudflare Tunnel (public access)
 ├── .env.example            # Template for GCP credentials
 ├── requirements.txt
 ├── LICENSE                 # MIT
@@ -495,32 +497,76 @@ Cross-platform launchers, `pathlib.Path` throughout, robust JSON repair for malf
 
 Resume from interrupted chunk runs, per-chunk corrections reports, `diminishing_returns_enabled` flag, and RAG-optimised prompts as defaults.
 
-### Step 12 — UI Cleanup and Vertex AI Tab
-
-**Problem:** The sidebar Auth Mode selector was redundant (already in Settings); the pricing refresh button was buried in Advanced options of the Convert tab; and advanced option layouts differed between Convert and Batch tabs, causing inconsistency.
-
-**What was changed:**
-- Removed **Auth Mode** from the sidebar. It is now a per-run override in the **Advanced options** expander on each tab (defaulting to the active machine's value).
-- Added a dedicated **Vertex AI** tab showing the full pricing table, cache metadata (date + model count), a **Refresh pricing** button, and a dynamic link to the Google Cloud usage dashboard.
-- Moved the pricing cache from `tmp/` (gitignored) to a new `pricing/` folder (tracked by git).
-- Unified **Advanced options** layout across Convert File and Batch Convert tabs to match the **Settings** tab field order: Project ID / Location / Refinement Passes → Auth Mode / Model / Max Errors → prompts → processing → batch-specific options.
-- Added a tooltip to **Validate after convert by default** in Settings explaining what validation does.
-- Removed the internal JSON-repair unit tests for the VertexAI backend (implementation-detail tests, not public API).
-
 ### Step 11 — Single Backend + Machine Profiles
 
-**Problem:** The multi-backend architecture (Vertex AI, Marker, pdfplumber) added complexity without real benefit — Vertex AI is the only backend used in practice. Project ID, location, and model were stored in `.env` alongside the API key, making it awkward to switch between machines.
+Removed Marker and pdfplumber backends (only Vertex AI was used). Moved project ID, location, and model out of `.env` into **machine profiles** in `config.json` — switch machines from the sidebar instead of editing env vars.
 
-**What was changed:**
-- Removed Marker and pdfplumber backends. `src/vertexai_backend.py` is now the single backend file, directly in `src/`.
-- Removed `PROJECT_ID`, `LOCATION`, and `MODEL_ID` from `.env` and `.env.example`. The `.env` file now only holds `GOOGLE_API_KEY`.
-- Added **machine profiles** to `src/config.json`: each profile stores a full set of Vertex AI settings (project ID, location, model, auth mode, prompts, refinement settings). Switch machines in the sidebar; the app reloads instantly with the new profile's settings.
-- The Settings tab now manages machine profiles (add, rename, delete, edit) in addition to processing/batch/logging settings.
+### Step 12 — UI Cleanup and Vertex AI Tab
 
-**Key design decisions:**
-- Machine profiles replace per-machine `.env` overrides. Instead of editing environment variables when switching between a home desktop and a work laptop, just select the right profile in the sidebar.
-- `active_machine` is persisted in `config.json` so the last-used machine is remembered across restarts.
-- A `Default` machine is created on first run if no machines are defined.
+Removed redundant sidebar Auth Mode selector. Added a dedicated **Vertex AI** tab (pricing table, cache info, usage dashboard link). Unified Advanced options layout across all tabs.
+
+### Step 13 — Secure Public Access via Cloudflare Tunnel
+
+Added `launch_server.sh` and `launch_server.bat` scripts that start Streamlit and open a Cloudflare Tunnel in one step, giving a public HTTPS URL without deploying to any cloud. API keys never leave your machine.
+
+## Sharing the App — How to Make It Accessible from Another Computer
+
+You can share your local Streamlit app with anyone on the internet without deploying to a server. The idea is simple: your PC runs the app, and a **tunnel** creates a temporary public URL that forwards traffic to your machine. Your API keys stay in your local `.env` file and never leave your computer.
+
+### How it works
+
+```
+[Your PC]                          [The Internet]
+ Streamlit (port 8501)  <──────>  Cloudflare Tunnel  <──────>  https://random-words.trycloudflare.com
+ .env with API key                (encrypted pipe)              (anyone with the link)
+```
+
+1. Streamlit starts on `localhost:8501` as usual.
+2. `cloudflared` opens an encrypted tunnel from your machine to Cloudflare's edge network.
+3. Cloudflare assigns a public `https://` URL. Anyone who visits it sees your Streamlit app.
+4. When you stop the tunnel (Ctrl+C), the URL dies immediately.
+
+### Quick start
+
+Install `cloudflared` (one-time):
+
+```bash
+# Linux (Debian/Ubuntu)
+sudo apt install cloudflared
+
+# macOS
+brew install cloudflared
+
+# Windows
+winget install Cloudflare.cloudflared
+```
+
+Then run:
+
+```bash
+./launch_server.sh          # Linux / macOS
+# or double-click launch_server.bat   # Windows
+```
+
+The script starts Streamlit and the tunnel together. Look for the `https://` URL in the output and share it.
+
+### Security notes
+
+- **API keys are safe.** They live in `.env` on your machine. The tunnel only forwards HTTP traffic to/from Streamlit — it cannot read your environment variables or files.
+- **No account needed.** Quick tunnels (`cloudflared tunnel --url ...`) require no Cloudflare account and no signup.
+- **URL is temporary.** Each time you restart the tunnel you get a new random URL. If you want a fixed subdomain, create a free Cloudflare account and set up a named tunnel.
+- **Only while your PC is on.** The app is reachable only while the script is running. Close the terminal or press Ctrl+C and it's offline.
+
+### Alternatives
+
+| Option | Cost | API key location | Always on? |
+|--------|------|------------------|------------|
+| **Cloudflare Tunnel** (recommended) | Free | Your PC | No (while PC is on) |
+| **ngrok** | Free tier | Your PC | No (while PC is on) |
+| **Tailscale Funnel** | Free | Your PC | No (while PC is on) |
+| **Streamlit Community Cloud** | Free | Streamlit's servers (encrypted secrets) | Yes |
+
+For educational and experimental use, a tunnel from your own PC is the simplest and safest option.
 
 ## License
 
