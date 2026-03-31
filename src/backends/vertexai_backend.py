@@ -370,6 +370,9 @@ class VertexAIBackend(BaseBackend):
             Number of iterative refinement passes (0 = extraction only).
         clean_stop_max_errors : int
             Early-stop threshold when verdict is CLEAN.  -1 = any CLEAN stops; 0 = only 0 errors.
+        diminishing_returns_enabled : bool
+            If True (default), stop early when successive refinement passes show no error reduction.
+            Set to False to always run all ``refine_iterations`` regardless of improvement.
         dry_run : bool
             If True, skip all API calls and return estimated token counts only.
         """
@@ -381,6 +384,7 @@ class VertexAIBackend(BaseBackend):
         auth_mode: str = str(kwargs.get("auth_mode", "api"))
         refine_iterations: int = int(kwargs.get("refine_iterations", 0))  # type: ignore[arg-type]
         clean_stop_max_errors: int = int(kwargs.get("clean_stop_max_errors", 0))  # type: ignore[arg-type]
+        diminishing_returns_enabled: bool = bool(kwargs.get("diminishing_returns_enabled", True))
         dry_run: bool = bool(kwargs.get("dry_run", False))
 
         extraction_prompt_file: str = str(
@@ -683,7 +687,7 @@ class VertexAIBackend(BaseBackend):
                         errors_found, clean_stop_max_errors,
                     )
 
-            if i >= 2:
+            if diminishing_returns_enabled and i >= 2:
                 prev_errors = track_record[-2]["errors_found"]
                 curr_errors = track_record[-1]["errors_found"]
                 if curr_errors >= prev_errors >= 0:

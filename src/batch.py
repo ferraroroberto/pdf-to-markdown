@@ -304,6 +304,7 @@ def _build_backend_kwargs(settings: Settings, dry_run: bool = False) -> dict:
         "auth_mode": vai.auth_mode,
         "refine_iterations": vai.refine_iterations,
         "clean_stop_max_errors": vai.clean_stop_max_errors,
+        "diminishing_returns_enabled": vai.diminishing_returns_enabled,
         "extraction_prompt_file": vai.extraction_prompt,
         "refinement_prompt_file": vai.refinement_prompt,
         "dry_run": dry_run,
