@@ -55,6 +55,14 @@ def run() -> None:
         with s3:
             new_refine = st.number_input("Default Refinement Passes", min_value=0, value=vai.refine_iterations, step=1)
             new_cse = st.number_input("Default Max Errors (CLEAN)", min_value=-1, value=vai.clean_stop_max_errors, step=1)
+            new_diminishing_returns = st.checkbox(
+                "Enable diminishing returns stop",
+                value=vai.diminishing_returns_enabled,
+                help=(
+                    "When enabled (default), refinement stops early if successive passes show no "
+                    "reduction in errors. Disable to always run all refinement passes regardless of improvement."
+                ),
+            )
 
         _prompts = _list_prompts()
         s4, s5 = st.columns([3, 3])
@@ -154,6 +162,7 @@ def run() -> None:
         cfg.vertexai.model = new_model
         cfg.vertexai.refine_iterations = int(new_refine)
         cfg.vertexai.clean_stop_max_errors = int(new_cse)
+        cfg.vertexai.diminishing_returns_enabled = new_diminishing_returns
         cfg.vertexai.extraction_prompt = new_ext_prompt
         cfg.vertexai.refinement_prompt = new_ref_prompt
 

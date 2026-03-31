@@ -6,6 +6,7 @@
     "auth_mode": "api",
     "refine_iterations": 0,
     "clean_stop_max_errors": 0,
+    "diminishing_returns_enabled": true,
     "extraction_prompt": "prompts/extraction.md",
     "refinement_prompt": "prompts/refinement.md"
   },
