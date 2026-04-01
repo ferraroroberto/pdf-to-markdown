@@ -26,6 +26,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: --- Tell the app it is being accessed remotely ---
+:: Disables native file dialogs, enables browser-based drag-and-drop upload.
+set PDF2MD_REMOTE=1
+
 :: --- Start Streamlit in the background ---
 echo [1/2] Starting Streamlit on port %PORT% ...
 start "pdf2md-streamlit" /B ".venv\Scripts\python.exe" -m streamlit run "app\app.py" ^
