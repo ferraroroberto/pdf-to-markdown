@@ -1,7 +1,7 @@
 # Vertex AI Gemini Pricing
 
 _Source: https://cloud.google.com/vertex-ai/generative-ai/pricing_
-_Fetched: 2026-03-27 18:55 UTC_
+_Fetched: 2026-04-01 12:54 UTC_
 
 Standard pricing — USD per 1 million tokens, ≤ 200K input-token context.
 
