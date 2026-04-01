@@ -21,6 +21,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from remote_upload import is_remote_session, save_uploaded_file, ACCEPT_TYPES
 from src import vertexai_pricing
 from src.classifier import classify_pdf
 from src.config import load_settings
@@ -934,44 +935,64 @@ def run() -> None:
     # ── 1. File selection ───────────────────────────────────────────────────
     st.subheader("Select File")
 
-    if _HAS_TKINTER:
-        col_input, col_browse = st.columns([5, 1])
-        _col_input = col_input
-    else:
-        _col_input = st.container()
+    _remote = is_remote_session()
 
-    if _HAS_TKINTER:
-        with col_browse:
-            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-            if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
-                root = tk.Tk()
-                root.withdraw()
-                root.wm_attributes("-topmost", 1)
-                chosen = filedialog.askopenfilename(
-                    title="Select a file",
-                    filetypes=[
-                        ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
-                        ("PDF files", "*.pdf"),
-                        ("Word documents", "*.docx *.doc"),
-                        ("PowerPoint presentations", "*.pptx *.ppt"),
-                        ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
-                        ("All files", "*.*"),
-                    ],
-                )
-                root.destroy()
-                if chosen:
-                    st.session_state.file_path_input = chosen
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    with _col_input:
-        file_path_str = st.text_input(
-            "File path",
-            placeholder=r"/path/to/document.pdf",
-            help="Paste the full local path to a PDF, Word, PowerPoint, or image file."
-            + (" Use Browse to pick one." if _HAS_TKINTER else ""),
-            key="file_path_input",
+    if _remote:
+        # Remote mode — use browser file uploader (drag-and-drop)
+        st.caption("🌐 Remote session detected — upload a file from your browser.")
+        uploaded = st.file_uploader(
+            "Upload a file",
+            type=ACCEPT_TYPES,
+            help="Drag and drop or click to upload a PDF, Word, PowerPoint, Excel, or image file.",
+            key="ex_file_upload",
             disabled=running,
         )
+        if uploaded is not None:
+            saved = save_uploaded_file(uploaded)
+            st.session_state.file_path_input = str(saved)
+            file_path_str = str(saved)
+        else:
+            file_path_str = ""
+    else:
+        # Local mode — native file browser + text input
+        if _HAS_TKINTER:
+            col_input, col_browse = st.columns([5, 1])
+            _col_input = col_input
+        else:
+            _col_input = st.container()
+
+        if _HAS_TKINTER:
+            with col_browse:
+                st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+                if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.wm_attributes("-topmost", 1)
+                    chosen = filedialog.askopenfilename(
+                        title="Select a file",
+                        filetypes=[
+                            ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                            ("PDF files", "*.pdf"),
+                            ("Word documents", "*.docx *.doc"),
+                            ("PowerPoint presentations", "*.pptx *.ppt"),
+                            ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                            ("All files", "*.*"),
+                        ],
+                    )
+                    root.destroy()
+                    if chosen:
+                        st.session_state.file_path_input = chosen
+                st.markdown("</div>", unsafe_allow_html=True)
+
+        with _col_input:
+            file_path_str = st.text_input(
+                "File path",
+                placeholder=r"/path/to/document.pdf",
+                help="Paste the full local path to a PDF, Word, PowerPoint, or image file."
+                + (" Use Browse to pick one." if _HAS_TKINTER else ""),
+                key="file_path_input",
+                disabled=running,
+            )
 
     pdf_path: Path | None = None
 
