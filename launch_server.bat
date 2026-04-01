@@ -46,7 +46,7 @@ echo.
 echo   Share the https:// URL printed below with anyone.
 echo   Press Ctrl+C to stop the tunnel, then close this window.
 echo.
-cloudflared tunnel --url http://localhost:%PORT%
+cloudflared tunnel --url http://localhost:%PORT% 2>&1 | findstr /V /C:"Cannot determine default origin certificate path"
 
 :: Cleanup: kill the Streamlit process
 taskkill /fi "windowtitle eq pdf2md-streamlit" /f >nul 2>&1

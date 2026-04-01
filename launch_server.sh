@@ -58,7 +58,7 @@ echo ""
 echo "  Share the https:// URL printed below with anyone."
 echo "  Press Ctrl+C to stop both the tunnel and Streamlit."
 echo ""
-cloudflared tunnel --url "http://localhost:$PORT"
+cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | awk '!/Cannot determine default origin certificate path/'
 
 # When the tunnel is stopped (Ctrl+C), also stop Streamlit
 kill "$STREAMLIT_PID" 2>/dev/null
