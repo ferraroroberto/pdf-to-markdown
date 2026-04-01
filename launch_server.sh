@@ -32,6 +32,10 @@ if ! command -v cloudflared &> /dev/null; then
 fi
 
 # --- Start Streamlit in the background ---
+# Tell the app it is being accessed remotely (disables native file dialogs,
+# enables browser-based drag-and-drop upload instead).
+export PDF2MD_REMOTE=1
+
 echo "[1/2] Starting Streamlit on port $PORT ..."
 .venv/bin/python -m streamlit run app/app.py \
     --server.port "$PORT" \

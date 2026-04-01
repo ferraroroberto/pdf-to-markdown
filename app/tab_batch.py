@@ -20,6 +20,7 @@ except ModuleNotFoundError:
 
 import streamlit as st
 
+from remote_upload import is_remote_session, save_uploaded_files, ACCEPT_TYPES
 from src.config import load_settings
 from src.models import ChunkResult
 
@@ -252,58 +253,90 @@ def run() -> None:
 
     st.subheader("Batch Folder Processing")
 
-    # ── Folder & Output selection ───────────────────────────────────────────
-    if _HAS_TKINTER:
-        fc1, fc2 = st.columns([5, 1])
-        _fc1 = fc1
-    else:
-        _fc1 = st.container()
+    _remote = is_remote_session()
 
-    if _HAS_TKINTER:
-        with fc2:
-            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-            if st.button("Browse...", width="stretch", key="bt_browse_folder", disabled=running):
-                root = tk.Tk()
-                root.withdraw()
-                root.wm_attributes("-topmost", 1)
-                chosen = filedialog.askdirectory(title="Select input folder")
-                root.destroy()
-                if chosen:
-                    st.session_state.bt_folder = chosen
-            st.markdown("</div>", unsafe_allow_html=True)
-    with _fc1:
-        folder_str: str = st.text_input(
-            "Input folder",
-            placeholder=r"/path/to/pdfs",
-            key="bt_folder",
+    # ── Folder & Output selection ───────────────────────────────────────────
+    if _remote:
+        # Remote mode — upload multiple files from browser
+        st.caption("🌐 Remote session detected — upload files from your browser.")
+        uploaded_files = st.file_uploader(
+            "Upload files",
+            type=ACCEPT_TYPES,
+            accept_multiple_files=True,
+            help="Drag and drop or click to upload PDF, Word, PowerPoint, Excel, or image files.",
+            key="bt_file_upload",
             disabled=running,
         )
+        if uploaded_files:
+            batch_dir = save_uploaded_files(uploaded_files)
+            st.session_state.bt_folder = str(batch_dir)
+            folder_str = str(batch_dir)
+            st.success(f"Uploaded {len(uploaded_files)} file(s)")
+        else:
+            folder_str = ""
 
-    if _HAS_TKINTER:
-        oc1, oc2 = st.columns([5, 1])
-        _oc1 = oc1
-    else:
-        _oc1 = st.container()
-
-    if _HAS_TKINTER:
-        with oc2:
-            st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
-            if st.button("Browse...", width="stretch", key="bt_browse_output", disabled=running):
-                root = tk.Tk()
-                root.withdraw()
-                root.wm_attributes("-topmost", 1)
-                chosen = filedialog.askdirectory(title="Select output folder")
-                root.destroy()
-                if chosen:
-                    st.session_state.bt_output = chosen
-            st.markdown("</div>", unsafe_allow_html=True)
-    with _oc1:
-        output_str: str = st.text_input(
-            "Output folder",
-            placeholder=r"/path/to/output",
+        # Output folder — use a default on the server
+        _default_output = str(Path(__file__).parent.parent / "output")
+        output_str = st.text_input(
+            "Output folder (on server)",
+            value=_default_output,
+            help="Server-side path where output Markdown files will be saved.",
             key="bt_output",
             disabled=running,
         )
+    else:
+        # Local mode — native folder browsers
+        if _HAS_TKINTER:
+            fc1, fc2 = st.columns([5, 1])
+            _fc1 = fc1
+        else:
+            _fc1 = st.container()
+
+        if _HAS_TKINTER:
+            with fc2:
+                st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+                if st.button("Browse...", width="stretch", key="bt_browse_folder", disabled=running):
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.wm_attributes("-topmost", 1)
+                    chosen = filedialog.askdirectory(title="Select input folder")
+                    root.destroy()
+                    if chosen:
+                        st.session_state.bt_folder = chosen
+                st.markdown("</div>", unsafe_allow_html=True)
+        with _fc1:
+            folder_str: str = st.text_input(
+                "Input folder",
+                placeholder=r"/path/to/pdfs",
+                key="bt_folder",
+                disabled=running,
+            )
+
+        if _HAS_TKINTER:
+            oc1, oc2 = st.columns([5, 1])
+            _oc1 = oc1
+        else:
+            _oc1 = st.container()
+
+        if _HAS_TKINTER:
+            with oc2:
+                st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
+                if st.button("Browse...", width="stretch", key="bt_browse_output", disabled=running):
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.wm_attributes("-topmost", 1)
+                    chosen = filedialog.askdirectory(title="Select output folder")
+                    root.destroy()
+                    if chosen:
+                        st.session_state.bt_output = chosen
+                st.markdown("</div>", unsafe_allow_html=True)
+        with _oc1:
+            output_str: str = st.text_input(
+                "Output folder",
+                placeholder=r"/path/to/output",
+                key="bt_output",
+                disabled=running,
+            )
 
     st.divider()
 
