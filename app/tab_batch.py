@@ -5,6 +5,7 @@ from __future__ import annotations
 import html as _html
 import logging
 import os
+import platform
 import queue
 import sys
 import threading
@@ -164,6 +165,46 @@ def _run_batch_worker(
             on_progress=lambda msg: log_q.put(msg),
         )
         result_q.put(("ok", results))
+    except Exception as exc:  # noqa: BLE001
+        result_q.put(("error", str(exc)))
+    finally:
+        root.removeHandler(handler)
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        log_q.put(None)
+
+
+def _run_pdf_convert_worker(
+    folder: Path,
+    output_dir: Path,
+    recursive: bool,
+    extensions: list[str],
+    verbose: bool,
+    result_q: queue.Queue,
+    log_q: queue.Queue,
+) -> None:
+    """Worker for "PDF conversion only" mode — file→PDF, no extraction."""
+    orig_stdout, orig_stderr = sys.stdout, sys.stderr
+    sys.stdout = _TeeStream(log_q, orig_stdout)
+    sys.stderr = _TeeStream(log_q, orig_stderr)
+
+    root = logging.getLogger()
+    handler = _QueueHandler(log_q)
+    handler.setFormatter(logging.Formatter("%(levelname)-8s  %(name)s: %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    try:
+        from src.batch import convert_folder_to_pdf
+
+        results = convert_folder_to_pdf(
+            folder=folder,
+            output_dir=output_dir,
+            recursive=recursive,
+            extensions=extensions,
+            on_progress=lambda msg: log_q.put(msg),
+        )
+        result_q.put(("pdf_ok", results))
     except Exception as exc:  # noqa: BLE001
         result_q.put(("error", str(exc)))
     finally:
@@ -343,6 +384,29 @@ def run() -> None:
     # ── Options ─────────────────────────────────────────────────────────────
     verbose: bool = st.checkbox("Verbose", key="bt_verbose_check", disabled=running)
 
+    _is_windows = platform.system() == "Windows"
+    pdf_only: bool = st.checkbox(
+        "PDF conversion only (Windows) — pre-convert files to PDF, skip extraction",
+        key="bt_pdf_only_check",
+        disabled=running or not _is_windows,
+        help=(
+            "Convert every supported file in the input folder to PDF using "
+            "Microsoft Office COM (preserves embedded images, including DrawingML "
+            "shapes), copy existing PDFs through unchanged, and write everything "
+            "to the output folder. No Vertex AI extraction is run — upload the "
+            "resulting PDFs to a machine that runs the full pipeline."
+        ),
+    )
+    if not _is_windows:
+        st.caption(
+            "⚠️ PDF conversion only mode requires Windows (Microsoft Office COM)."
+        )
+    elif pdf_only:
+        st.caption(
+            "ℹ️ PDF-only mode: all supported file types are converted/copied to "
+            "the output folder. Vertex AI and chunking options below are ignored."
+        )
+
     # ── Advanced options ────────────────────────────────────────────────────
     with st.expander("Advanced options", expanded=False):
         # Row 1: Project ID | Location | Refinement Passes
@@ -488,20 +552,23 @@ def run() -> None:
 
     # ── Execute buttons ─────────────────────────────────────────────────────
     if not running:
-        btn_col, dry_col = st.columns([4, 2])
-
-        with dry_col:
-            st.markdown('<div style="margin-top: 0.35rem;"></div>', unsafe_allow_html=True)
-            bt_dry_run = st.toggle(
-                "Dry run (estimate only)", key="bt_dry_run_check",
-                help="No API calls — estimates token counts only.",
-            )
+        if pdf_only:
+            btn_col = st.container()
+            bt_dry_run = False
+        else:
+            btn_col, dry_col = st.columns([4, 2])
+            with dry_col:
+                st.markdown('<div style="margin-top: 0.35rem;"></div>', unsafe_allow_html=True)
+                bt_dry_run = st.toggle(
+                    "Dry run (estimate only)", key="bt_dry_run_check",
+                    help="No API calls — estimates token counts only.",
+                )
 
         folder_valid = folder_str and Path(folder_str.strip()).is_dir()
         output_valid = bool(output_str.strip())
 
         bt_clicked = btn_col.button(
-            "Run Batch",
+            "Convert to PDF" if pdf_only else "Run Batch",
             type="primary",
             width="stretch",
             key="bt_execute_btn",
@@ -517,38 +584,54 @@ def run() -> None:
             st.session_state.bt_logs = []
             st.session_state.bt_result = None
 
-            backend_kwargs = {
-                "project_id": st.session_state.get("bt_project_id", ""),
-                "location": st.session_state.get("bt_location", "europe-west3"),
-                "model_id": st.session_state.get("bt_model_id", "gemini-2.5-pro"),
-                "auth_mode": auth_mode,
-                "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
-                "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
-                "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
-                "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
-                "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),
-                "dry_run": bt_dry_run,
-            }
-
             log_q: queue.Queue = queue.Queue()
             result_q: queue.Queue = queue.Queue()
 
-            thread = threading.Thread(
-                target=_run_batch_worker,
-                args=(
-                    Path(folder_str.strip()),
-                    Path(output_str.strip()),
-                    backend_kwargs,
-                    chunk_size,
-                    chunk_overlap,
-                    recursive,
-                    verbose,
-                    result_q,
-                    log_q,
-                ),
-                kwargs={"extensions": selected_extensions},
-                daemon=True,
-            )
+            if pdf_only:
+                from src.file_converter import SUPPORTED_EXTENSIONS
+                pdf_extensions = sorted(SUPPORTED_EXTENSIONS | {".pdf"})
+                thread = threading.Thread(
+                    target=_run_pdf_convert_worker,
+                    args=(
+                        Path(folder_str.strip()),
+                        Path(output_str.strip()),
+                        recursive,
+                        pdf_extensions,
+                        verbose,
+                        result_q,
+                        log_q,
+                    ),
+                    daemon=True,
+                )
+            else:
+                backend_kwargs = {
+                    "project_id": st.session_state.get("bt_project_id", ""),
+                    "location": st.session_state.get("bt_location", "europe-west3"),
+                    "model_id": st.session_state.get("bt_model_id", "gemini-2.5-pro"),
+                    "auth_mode": auth_mode,
+                    "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
+                    "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
+                    "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
+                    "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
+                    "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),
+                    "dry_run": bt_dry_run,
+                }
+                thread = threading.Thread(
+                    target=_run_batch_worker,
+                    args=(
+                        Path(folder_str.strip()),
+                        Path(output_str.strip()),
+                        backend_kwargs,
+                        chunk_size,
+                        chunk_overlap,
+                        recursive,
+                        verbose,
+                        result_q,
+                        log_q,
+                    ),
+                    kwargs={"extensions": selected_extensions},
+                    daemon=True,
+                )
             thread.start()
 
             st.session_state.bt_running = True
@@ -604,6 +687,39 @@ def run() -> None:
 
         if status == "error":
             st.error(f"Batch failed:\n\n```\n{payload}\n```")
+        elif status == "pdf_ok":
+            pdf_results: list[dict] = payload
+
+            st.subheader("PDF Conversion Results")
+
+            converted = sum(1 for r in pdf_results if r["status"] == "converted")
+            copied = sum(1 for r in pdf_results if r["status"] == "copied")
+            skipped = sum(1 for r in pdf_results if r["status"] == "skipped")
+            failed = sum(1 for r in pdf_results if r["status"] == "error")
+
+            summary = (
+                f"Processed **{len(pdf_results)} file(s)** — "
+                f"{converted} converted, {copied} copied"
+            )
+            if skipped:
+                summary += f", {skipped} skipped"
+            if failed:
+                st.warning(summary + f", {failed} failed.")
+            else:
+                st.success(summary + ".")
+
+            st.dataframe(
+                [
+                    {
+                        "File": Path(r["file"]).name,
+                        "Status": r["status"],
+                        "Output": Path(r["output"]).name if r["output"] else "",
+                        "Error": r["error"] or "",
+                    }
+                    for r in pdf_results
+                ],
+                width="stretch",
+            )
         else:
             results: list[ChunkResult] = payload
 

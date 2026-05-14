@@ -255,6 +255,7 @@ The Vertex AI backend can process Word, PowerPoint, and image files in addition 
 - **Chunking works for all file types.** When `--chunk-size` is set and a non-PDF file is given, the file is first converted to PDF, then split into chunks normally. A 50-page PowerPoint with `--chunk-size 10` produces 5 chunks.
 - The conversion step is logged in the execution log (visible in the Execution Log panel in the UI).
 - In the Batch tab, use the **File types to process** multiselect to include non-PDF extensions.
+- **PDF conversion only (Windows).** The Batch Convert tab has a *"PDF conversion only (Windows)"* checkbox that runs just the file→PDF step — Office documents and images in the input folder are converted to PDF (existing PDFs are copied through), with no extraction. It uses Microsoft Office COM, which preserves embedded images including DrawingML shapes/text boxes; the Linux/docling path drops those without a LibreOffice binary. Use it to pre-convert on Windows, then upload the PDFs to a machine that runs the full pipeline.
 
 ## Prompts
 

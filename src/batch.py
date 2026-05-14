@@ -136,6 +136,106 @@ def run_batch(
     return all_results
 
 
+def convert_folder_to_pdf(
+    folder: Path,
+    output_dir: Path,
+    recursive: bool = True,
+    extensions: list[str] | None = None,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """Pre-convert every supported file under *folder* to PDF in *output_dir*.
+
+    This is the file→PDF step only — no classification, no extraction, no
+    Markdown.  The output folder ends up holding PDFs ready to upload to a
+    machine that runs the full extraction pipeline.
+
+    Windows-only: Office documents are converted via Microsoft Office COM so
+    embedded images (including DrawingML shapes/text boxes) are preserved —
+    the docling path used on Linux silently drops those without a LibreOffice
+    binary.  Existing ``.pdf`` files are copied through unchanged.
+
+    Parameters
+    ----------
+    folder:
+        Source directory.
+    output_dir:
+        Directory to write the PDFs into (created if missing).
+    recursive:
+        If True, recurse into sub-directories.
+    extensions:
+        File extensions to match (lower-case, with dot).  Defaults to ``[".pdf"]``.
+    on_progress:
+        Optional callback called with a human-readable progress string.
+
+    Returns
+    -------
+    One result dict per file: ``{"file", "output", "status", "error"}`` where
+    ``status`` is ``"converted"``, ``"copied"``, ``"skipped"`` or ``"error"``.
+    """
+    import platform
+    import shutil as _shutil
+
+    from src.file_converter import convert_to_pdf, needs_conversion
+
+    if platform.system() != "Windows":
+        raise RuntimeError(
+            "convert_folder_to_pdf is Windows-only — it relies on Microsoft "
+            "Office COM automation to preserve embedded images."
+        )
+
+    def _progress(msg: str) -> None:
+        logger.info("ℹ️ %s", msg)
+        if on_progress:
+            on_progress(msg)
+
+    files = discover(folder, recursive=recursive, extensions=extensions)
+    if not files:
+        _progress(f"No matching files found in {folder}")
+        return []
+
+    _progress(f"Found {len(files)} file(s) in {folder}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict] = []
+    for idx, src in enumerate(files, 1):
+        _progress(f"[{idx}/{len(files)}] {src.name}")
+        try:
+            if src.suffix.lower() == ".pdf":
+                dest = output_dir / src.name
+                _shutil.copy2(src, dest)
+                status = "copied"
+            elif needs_conversion(src):
+                dest = convert_to_pdf(src, output_dir)
+                status = "converted"
+            else:
+                _progress(f"  Skipped {src.name} — unsupported file type")
+                results.append({
+                    "file": str(src), "output": "",
+                    "status": "skipped", "error": "unsupported file type",
+                })
+                continue
+            results.append({
+                "file": str(src), "output": str(dest),
+                "status": status, "error": None,
+            })
+            _progress(f"  → {dest.name} ({status})")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("❌ Failed to convert %s: %s", src.name, exc)
+            results.append({
+                "file": str(src), "output": "",
+                "status": "error", "error": str(exc),
+            })
+
+    converted = sum(1 for r in results if r["status"] == "converted")
+    copied = sum(1 for r in results if r["status"] == "copied")
+    failed = sum(1 for r in results if r["status"] == "error")
+    _progress(
+        f"PDF conversion finished — {converted} converted, "
+        f"{copied} copied, {failed} failed"
+    )
+    return results
+
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
