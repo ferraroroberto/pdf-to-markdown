@@ -8,6 +8,7 @@ Only used for the Vertex AI backend.
 
 from __future__ import annotations
 
+import io
 import logging
 import platform
 import shutil
@@ -156,11 +157,14 @@ def _office_to_pdf_docling(source: Path, output_dir: Path) -> Path:
     """Unix/Linux path: parse Office file with docling, render content to PDF via PyMuPDF.
 
     docling (already a project dependency) handles DOCX/PPTX/XLSX natively without
-    requiring any system-level Office suite.  The parsed content is exported as
-    Markdown and then laid out into a PDF using fitz (pymupdf).
+    requiring any system-level Office suite.  The parsed document is walked in
+    reading order — text, tables, and **embedded images** are all rendered into
+    the PDF so they reach the extraction backend (images would otherwise be lost,
+    unlike the Windows COM path which preserves them).
     """
     try:
         from docling.document_converter import DocumentConverter
+        from docling_core.types.doc import PictureItem, TableItem, TextItem
     except ImportError:
         raise RuntimeError(
             "docling is required for Office-to-PDF conversion on Linux. "
@@ -174,34 +178,70 @@ def _office_to_pdf_docling(source: Path, output_dir: Path) -> Path:
     FS = 9
     LINE_H = FS * 1.5
     WRAP_WIDTH = 95  # characters per line (approx for base-14 Helvetica at 9pt)
+    CONTENT_W = PAGE_W - 2 * MARGIN
+    CONTENT_H = PAGE_H - 2 * MARGIN
+    IMG_GAP = LINE_H  # vertical breathing room around an embedded image
 
     logger.info("ℹ️ Converting %s to PDF via docling + PyMuPDF…", source.name)
 
     converter = DocumentConverter()
-    content = converter.convert(str(source.resolve())).document.export_to_markdown()
+    doc = converter.convert(str(source.resolve())).document
 
-    # Word-wrap each source line so text stays within the page margins
-    physical_lines: list[str] = []
-    for line in content.splitlines():
-        if not line.strip():
-            physical_lines.append("")
-        else:
-            physical_lines.extend(textwrap.wrap(line, WRAP_WIDTH) or [""])
-
-    pdf_path = output_dir / (source.stem + ".pdf")
-    doc = fitz.open()
-    page = doc.new_page(width=PAGE_W, height=PAGE_H)
+    pdf = fitz.open()
+    page = pdf.new_page(width=PAGE_W, height=PAGE_H)
     y = MARGIN + FS
 
-    for line in physical_lines:
-        if y + LINE_H > PAGE_H - MARGIN:
-            page = doc.new_page(width=PAGE_W, height=PAGE_H)
-            y = MARGIN + FS
-        page.insert_text((MARGIN, y), line, fontsize=FS)
-        y += LINE_H
+    def _new_page() -> None:
+        nonlocal page, y
+        page = pdf.new_page(width=PAGE_W, height=PAGE_H)
+        y = MARGIN + FS
 
-    doc.save(str(pdf_path))
-    doc.close()
+    def _write_lines(text: str) -> None:
+        """Word-wrap *text* and lay it out, breaking pages as needed."""
+        nonlocal y
+        for raw_line in text.splitlines() or [""]:
+            wrapped = textwrap.wrap(raw_line, WRAP_WIDTH) if raw_line.strip() else [""]
+            for line in wrapped or [""]:
+                if y + LINE_H > PAGE_H - MARGIN:
+                    _new_page()
+                page.insert_text((MARGIN, y), line, fontsize=FS)
+                y += LINE_H
+
+    def _place_image(img) -> None:
+        """Embed a PIL image, scaled to fit the page, breaking pages as needed."""
+        nonlocal y
+        if img.mode == "CMYK":
+            img = img.convert("RGB")
+        # Scale down to fit within the content box; never scale up.
+        scale = min(CONTENT_W / img.width, CONTENT_H / img.height, 1.0)
+        draw_w = img.width * scale
+        draw_h = img.height * scale
+        if y + draw_h + IMG_GAP > PAGE_H - MARGIN:
+            _new_page()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        page.insert_image(
+            fitz.Rect(MARGIN, y, MARGIN + draw_w, y + draw_h),
+            stream=buf.getvalue(),
+        )
+        y += draw_h + IMG_GAP
+
+    for item, _level in doc.iterate_items():
+        if isinstance(item, PictureItem):
+            img = item.get_image(doc)
+            if img is not None:
+                _place_image(img)
+            else:
+                _write_lines("[image]")
+        elif isinstance(item, TableItem):
+            _write_lines(item.export_to_markdown(doc))
+        elif isinstance(item, TextItem):
+            _write_lines(item.text)
+        # Other node types (groups, key-value, etc.) carry no renderable content.
+
+    pdf_path = output_dir / (source.stem + ".pdf")
+    pdf.save(str(pdf_path))
+    pdf.close()
 
     logger.info(
         "ℹ️ Converted %s → %s (%.1f KB)",

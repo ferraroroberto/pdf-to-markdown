@@ -173,3 +173,55 @@ class TestOfficeToPdfMissingDependency:
         with patch.dict("sys.modules", {"win32com": None, "win32com.client": None}):
             with pytest.raises((RuntimeError, ImportError)):
                 convert_to_pdf(docx, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# _office_to_pdf_docling — embedded images survive conversion (issue #16)
+# ---------------------------------------------------------------------------
+
+
+class TestDoclingEmbeddedImages:
+    """The Linux/docling path must render embedded images into the PDF, not just
+    the text. Regression test for issue #16. Runs on any platform — it calls the
+    docling helper directly rather than going through the platform dispatcher."""
+
+    @staticmethod
+    def _build_docx_with_image(dest: Path) -> None:
+        import io
+
+        docx = pytest.importorskip("docx")
+        from PIL import Image
+
+        img = Image.new("RGB", (240, 160), (200, 40, 40))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        document = docx.Document()
+        document.add_heading("Embedded image test", 0)
+        document.add_paragraph("Text before the image.")
+        document.add_picture(buf)
+        document.add_paragraph("Text after the image.")
+        document.save(str(dest))
+
+    def test_embedded_image_is_rendered_into_pdf(self, tmp_path):
+        pytest.importorskip("docling")
+        import fitz
+
+        from src.file_converter import _office_to_pdf_docling
+
+        src = tmp_path / "with_image.docx"
+        self._build_docx_with_image(src)
+
+        pdf_path = _office_to_pdf_docling(src, tmp_path)
+        assert pdf_path.exists()
+
+        doc = fitz.open(str(pdf_path))
+        try:
+            image_count = sum(len(page.get_images()) for page in doc)
+            text = "".join(page.get_text() for page in doc)
+        finally:
+            doc.close()
+
+        assert image_count >= 1, "embedded image was dropped during conversion"
+        assert "before the image" in text, "surrounding text should still be present"
