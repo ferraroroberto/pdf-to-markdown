@@ -144,9 +144,10 @@ def _run_single(
     import tempfile as _tempfile
     from src.chunker import split_pdf, merge_chunks
     from src.pipeline import Pipeline
+    from src.vertexai_backend import VertexAIBackend
     from src.file_converter import needs_conversion
 
-    backend_name = settings.processing.backend
+    backend_name = VertexAIBackend.name
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
 

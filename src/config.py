@@ -24,6 +24,17 @@ logger = logging.getLogger("config")
 
 _CONFIG_PATH = Path(__file__).parent / "config.json"
 
+# Canonical Gemini model IDs offered in every UI dropdown. Single source of
+# truth so config.json, the Execute/Batch/Settings selectors, and the pricing
+# table never drift apart. IDs must match the strings the Vertex AI API accepts
+# (the Gemini 3.x family carries a "-preview" suffix on the public pricing page).
+GEMINI_MODELS: list[str] = [
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
+]
+
 
 # ── Sub-settings dataclasses ────────────────────────────────────────────────────
 

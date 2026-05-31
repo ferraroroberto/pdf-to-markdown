@@ -85,10 +85,15 @@ def _project_root() -> Path:
 
 
 def _resolve_prompt_path(prompt_file: str) -> Path:
-    """Resolve a prompt file path, relative to project root if not absolute."""
-    p = Path(prompt_file)
+    """Resolve a prompt file path, relative to project root if not absolute.
+
+    Backslashes are normalised to forward slashes first so a path written on
+    Windows (``prompts\\extraction_rag.md``) still resolves on POSIX, where a
+    backslash is a literal filename character rather than a separator.
+    """
+    p = Path(prompt_file.replace("\\", "/"))
     if not p.is_absolute():
-        p = _project_root() / prompt_file
+        p = _project_root() / p
     return p
 
 

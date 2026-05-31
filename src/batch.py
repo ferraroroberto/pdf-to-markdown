@@ -15,6 +15,7 @@ from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.config import Settings
 from src.models import ChunkResult, ConversionResult
 from src.pipeline import Pipeline
+from src.vertexai_backend import VertexAIBackend
 
 logger = logging.getLogger("batch")
 
@@ -100,7 +101,7 @@ def run_batch(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     all_results: list[ChunkResult] = []
-    backend_name = settings.processing.backend
+    backend_name = VertexAIBackend.name
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
     workers = settings.processing.workers
@@ -261,7 +262,7 @@ def _process_single(
             chunk_idx=0,
             chunk_pages="all",
             markdown="",
-            backend_used=settings.processing.backend,
+            backend_used=VertexAIBackend.name,
             metadata={},
             error=str(exc),
         )
@@ -332,7 +333,7 @@ def _process_chunked(
         logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
         return [ChunkResult(
             source=pdf_path, chunk_idx=0, chunk_pages="all",
-            markdown="", backend_used=settings.processing.backend,
+            markdown="", backend_used=VertexAIBackend.name,
             metadata={}, error=str(exc),
         )]
 
@@ -362,7 +363,7 @@ def _process_chunked(
             chunk_idx=chunk_idx,
             chunk_pages=pages_label,
             markdown=result.markdown if result else "",
-            backend_used=result.backend_used if result else settings.processing.backend,
+            backend_used=result.backend_used if result else VertexAIBackend.name,
             metadata=meta,
             iteration=meta.get("iterations_completed", 0),
             errors=last_row.get("errors_found", 0),
