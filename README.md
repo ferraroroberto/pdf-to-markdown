@@ -56,7 +56,7 @@ pdf2md/
 │   ├── file_converter.py   # Pre-conversion: Office/image → PDF
 │   ├── logger_exec.py      # Structured JSONL execution logger
 │   ├── logging_config.py   # Centralised logging (console + rotating file)
-│   ├── models.py           # ConversionResult, ChunkResult, BatchResult, ValidationReport
+│   ├── models.py           # ConversionResult, ChunkResult, ValidationReport
 │   ├── pipeline.py         # Single-file orchestrator
 │   ├── postprocess.py      # Markdown cleaning pipeline
 │   ├── validation.py       # Quality validation

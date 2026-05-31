@@ -6,7 +6,7 @@ from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.classifier import PDFInfo, classify_pdf
 from src.config import Settings, load_settings, save_settings
 from src.logger_exec import append_row, load_log
-from src.models import BatchResult, ChunkResult, ConversionResult, ValidationReport
+from src.models import ChunkResult, ConversionResult, ValidationReport
 from src.pipeline import Pipeline
 from src.postprocess import postprocess
 from src.validation import validate
@@ -28,7 +28,6 @@ __all__ = [
     "load_log",
     "ConversionResult",
     "ChunkResult",
-    "BatchResult",
     "ValidationReport",
     "PDFInfo",
     "classify_pdf",

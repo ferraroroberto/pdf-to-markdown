@@ -1,7 +1,7 @@
 """Batch processing — folder discovery and orchestration.
 
 Each file in the folder is processed independently (single-file or chunked pipeline).
-No cross-file merging.  Results are collected into a ``BatchResult``.
+No cross-file merging.  Results are returned as a flat ``list[ChunkResult]``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import Callable
 
 from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.config import Settings
-from src.models import BatchResult, ChunkResult, ConversionResult
+from src.models import ChunkResult, ConversionResult
 from src.pipeline import Pipeline
 
 logger = logging.getLogger("batch")
