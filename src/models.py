@@ -82,8 +82,8 @@ class ChunkResult:
     """Result for a single chunk (or whole file when chunking is disabled).
 
     Used by batch processing to track per-chunk outcomes, costs, and error
-    counts.  Collected into a ``BatchResult`` for display in the Streamlit
-    Batch tab and in the execution log.
+    counts.  Collected by ``run_batch`` into a flat list for display in the
+    Streamlit Batch tab and in the execution log.
     """
 
     source: Path
@@ -105,35 +105,3 @@ class ChunkResult:
     def failed(self) -> bool:
         """True when the chunk conversion raised an unrecoverable error."""
         return self.error is not None
-
-
-@dataclass
-class BatchResult:
-    """Aggregated result for a batch folder run.
-
-    Wraps the list of ``ChunkResult`` objects and exposes summary statistics
-    (total tokens, total cost, file count, failure count).
-    """
-
-    folder: Path
-    results: list[ChunkResult] = field(default_factory=list)
-
-    @property
-    def total_input_tokens(self) -> int:
-        return sum(r.metadata.get("total_input_tokens", 0) for r in self.results)
-
-    @property
-    def total_output_tokens(self) -> int:
-        return sum(r.metadata.get("total_output_tokens", 0) for r in self.results)
-
-    @property
-    def total_tokens(self) -> int:
-        return sum(r.metadata.get("total_tokens", 0) for r in self.results)
-
-    @property
-    def file_count(self) -> int:
-        return len({r.source for r in self.results})
-
-    @property
-    def failed_count(self) -> int:
-        return sum(1 for r in self.results if r.failed)

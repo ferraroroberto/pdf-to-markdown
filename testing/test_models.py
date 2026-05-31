@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from src.models import BatchResult, ChunkResult, ConversionResult, ValidationReport
+from src.models import ChunkResult, ConversionResult, ValidationReport
 
 
 # ---------------------------------------------------------------------------
@@ -176,57 +176,3 @@ class TestChunkResult:
         # The failed check uses `is not None`, so even "" is treated as failed
         chunk = _make_chunk(error="")
         assert chunk.failed is True
-
-
-# ---------------------------------------------------------------------------
-# BatchResult
-# ---------------------------------------------------------------------------
-
-
-class TestBatchResult:
-    def _make_batch(self) -> BatchResult:
-        chunks = [
-            _make_chunk(
-                source=Path("a.pdf"),
-                chunk_idx=0,
-                metadata={"total_input_tokens": 100, "total_output_tokens": 50, "total_tokens": 150},
-            ),
-            _make_chunk(
-                source=Path("a.pdf"),
-                chunk_idx=1,
-                metadata={"total_input_tokens": 200, "total_output_tokens": 80, "total_tokens": 280},
-            ),
-            _make_chunk(
-                source=Path("b.pdf"),
-                chunk_idx=0,
-                metadata={"total_input_tokens": 300, "total_output_tokens": 120, "total_tokens": 420},
-                error="extraction failed",
-            ),
-        ]
-        return BatchResult(folder=Path("docs/"), results=chunks)
-
-    def test_total_input_tokens(self):
-        batch = self._make_batch()
-        assert batch.total_input_tokens == 600
-
-    def test_total_output_tokens(self):
-        batch = self._make_batch()
-        assert batch.total_output_tokens == 250
-
-    def test_total_tokens(self):
-        batch = self._make_batch()
-        assert batch.total_tokens == 850
-
-    def test_file_count_counts_unique_sources(self):
-        batch = self._make_batch()
-        assert batch.file_count == 2  # a.pdf and b.pdf
-
-    def test_failed_count(self):
-        batch = self._make_batch()
-        assert batch.failed_count == 1
-
-    def test_empty_batch(self):
-        batch = BatchResult(folder=Path("."))
-        assert batch.total_tokens == 0
-        assert batch.file_count == 0
-        assert batch.failed_count == 0
