@@ -22,7 +22,7 @@ except ModuleNotFoundError:
 import streamlit as st
 
 from remote_upload import is_remote_session, save_uploaded_files, ACCEPT_TYPES
-from src.config import load_settings
+from src.config import GEMINI_MODELS, load_settings
 from src.models import ChunkResult
 
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -45,12 +45,8 @@ def _list_refinement_prompts() -> list[str]:
     return _list_prompts_by_prefix("refinement")
 
 
-# Gemini model options
-_VAI_MODELS: list[str] = [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-3.1-flash-lite-preview",
-]
+# Gemini model options — shared constant (see src.config.GEMINI_MODELS)
+_VAI_MODELS: list[str] = GEMINI_MODELS
 
 
 # ── Logging / stream plumbing (reuse execute.py helpers) ───────────────────────

@@ -5,13 +5,13 @@
       "name": "desktop",
       "project_id": "pdf-to-markdown-491516",
       "location": "europe-west3",
-      "model": "gemini-3.1-pro",
+      "model": "gemini-3.1-pro-preview",
       "auth_mode": "api",
       "refine_iterations": 0,
       "clean_stop_max_errors": 0,
       "diminishing_returns_enabled": true,
-      "extraction_prompt": "prompts\\extraction_rag.md",
-      "refinement_prompt": "prompts\\refinement_rag.md"
+      "extraction_prompt": "prompts/extraction_rag.md",
+      "refinement_prompt": "prompts/refinement_rag.md"
     }
   ],
   "processing": {

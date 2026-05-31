@@ -24,7 +24,7 @@ import streamlit as st
 from remote_upload import is_remote_session, save_uploaded_file, ACCEPT_TYPES
 from src import vertexai_pricing
 from src.classifier import classify_pdf
-from src.config import load_settings
+from src.config import GEMINI_MODELS, load_settings
 from src.logging_config import get_file_handler
 from src.models import ConversionResult
 from src.pipeline import Pipeline
@@ -49,13 +49,10 @@ def _list_refinement_prompts() -> list[str]:
     return _list_prompts_by_prefix("refinement")
 
 
-# Gemini model options shown in the UI (order = dropdown order)
-_VAI_MODELS: list[str] = [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-flash-lite-preview",
-]
+# Gemini model options shown in the UI (order = dropdown order).
+# Sourced from the single shared constant in src.config so the Execute, Batch,
+# and Settings dropdowns and config.json never drift apart.
+_VAI_MODELS: list[str] = GEMINI_MODELS
 
 
 # ── Stream tee ─────────────────────────────────────────────────────────────────

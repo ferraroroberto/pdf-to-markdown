@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.config import MachineProfile, load_settings, save_settings
+from src.config import GEMINI_MODELS, MachineProfile, load_settings, save_settings
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -99,7 +99,7 @@ def run() -> None:
             )
         with s2:
             new_location = st.text_input("Location", value=edit_machine.location)
-            _model_opts = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3.1-flash-lite-preview"]
+            _model_opts = GEMINI_MODELS
             new_model: str = st.selectbox(
                 "Model",
                 _model_opts,
