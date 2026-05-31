@@ -35,6 +35,7 @@ pdf2md/
 │   ├── tab_log.py          # History tab
 │   ├── tab_settings.py     # Settings tab (machine profiles + full config.json editor)
 │   ├── tab_vertexai.py     # Vertex AI tab (pricing table, cache refresh, usage link)
+│   ├── remote_upload.py    # Remote-session detection and browser-based file upload handler
 │   └── .streamlit/
 │       └── config.toml     # Streamlit theme
 ├── prompts/
@@ -44,8 +45,6 @@ pdf2md/
 │   ├── refinement.md       # Iterative quality audit (skeptical-bias)
 │   └── refinement_rag.md   # RAG-optimized convergent refinement (default)
 ├── src/
-│   ├── backends/
-│   │   └── __init__.py     # Thin compatibility shim (re-exports VertexAIBackend)
 │   ├── auth.py             # Authentication factory (api | gcloud)
 │   ├── batch.py            # Folder discovery and batch orchestrator
 │   ├── chunker.py          # PDF page splitter and markdown merger
