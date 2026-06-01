@@ -35,6 +35,16 @@ GEMINI_MODELS: list[str] = [
     "gemini-3.1-flash-lite-preview",
 ]
 
+# Extraction backends selectable from the CLI / UI. ``hubgemini`` routes PDFs
+# through the local LLM hub (default, issue #27); ``vertexai`` calls Google
+# Vertex AI directly (fallback). Keep in sync with ``src.pipeline._BACKENDS``.
+BACKENDS: list[str] = ["hubgemini", "vertexai"]
+DEFAULT_BACKEND: str = "hubgemini"
+
+# Stable hub model alias used when the backend is ``hubgemini``. NEVER a
+# display name — the hub repoints display_name under this alias over time.
+HUB_MODEL: str = "gemini_pro"
+
 
 # ── Sub-settings dataclasses ────────────────────────────────────────────────────
 
@@ -97,6 +107,7 @@ class LoggingSettings:
 class Settings:
     machines: list[MachineProfile] = field(default_factory=lambda: [MachineProfile()])
     active_machine: str = "Default"
+    backend: str = DEFAULT_BACKEND
     vertexai: VertexAISettings = field(default_factory=VertexAISettings)
     processing: ProcessingSettings = field(default_factory=ProcessingSettings)
     batch: BatchSettings = field(default_factory=BatchSettings)
@@ -146,6 +157,14 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
         machines[0],
     )
 
+    # Top-level backend selector (default = hub). Override via overrides["backend"].
+    backend_name = str((overrides or {}).get("backend", raw.get("backend", DEFAULT_BACKEND)))
+    if backend_name not in BACKENDS:
+        logger.warning(
+            "⚠️ Unknown backend %r in config — falling back to %r", backend_name, DEFAULT_BACKEND
+        )
+        backend_name = DEFAULT_BACKEND
+
     # ── Build effective VertexAI settings from active machine ────────────────
     vai_overrides = (overrides or {}).get("vertexai", {})
     vai = VertexAISettings(
@@ -170,6 +189,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
     return Settings(
         machines=machines,
         active_machine=active_machine_name,
+        backend=backend_name,
         vertexai=vai,
         processing=ProcessingSettings(
             chunk_size=int(proc_raw.get("chunk_size", 0)),
@@ -218,6 +238,7 @@ def save_settings(settings: Settings) -> None:
 
     data = {
         "active_machine": settings.active_machine,
+        "backend": settings.backend,
         "machines": [asdict(m) for m in updated_machines],
         "processing": asdict(settings.processing),
         "batch": asdict(settings.batch),

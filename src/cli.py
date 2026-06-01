@@ -29,10 +29,15 @@ def main() -> None:
 @click.argument("input_path", type=click.Path(exists=True))
 @click.option("-o", "--output", "output_path", type=click.Path(), default=None,
               help="Output file or directory.")
+@click.option("--backend",
+              type=click.Choice(["hubgemini", "vertexai"]),
+              default=None,
+              help="Extraction backend. hubgemini routes via the local LLM hub (default); "
+                   "vertexai calls Google Vertex AI directly. Default: from config.json.")
 @click.option("--auth-mode",
               type=click.Choice(["api", "gcloud"]),
               default=None,
-              help="Vertex AI auth mode. Default: from config.json.")
+              help="Vertex AI auth mode (vertexai backend only). Default: from config.json.")
 @click.option("--project-id", default=None,
               help="Google Cloud project ID. Falls back to PROJECT_ID env var.")
 @click.option("--location", default=None,
@@ -63,6 +68,7 @@ def main() -> None:
 def convert(
     input_path: str,
     output_path: str | None,
+    backend: str | None,
     auth_mode: str | None,
     project_id: str | None,
     location: str | None,
@@ -88,6 +94,8 @@ def convert(
     vai_overrides: dict = {}
     proc_overrides: dict = {}
 
+    if backend is not None:
+        cli_overrides["backend"] = backend
     if auth_mode is not None:
         vai_overrides["auth_mode"] = auth_mode
     if project_id is not None:
@@ -144,10 +152,9 @@ def _run_single(
     import tempfile as _tempfile
     from src.chunker import split_pdf, merge_chunks
     from src.pipeline import Pipeline
-    from src.vertexai_backend import VertexAIBackend
     from src.file_converter import needs_conversion
 
-    backend_name = VertexAIBackend.name
+    backend_name = settings.backend
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
 
@@ -271,8 +278,11 @@ def backends() -> None:
     table.add_column("Status")
     table.add_column("Scanned PDF Support")
 
-    status = "[green]Available[/green]" if VertexAIBackend.is_available() else "[red]Not installed[/red]"
-    table.add_row("vertexai", status, "Yes")
+    from src.hub_gemini_backend import HubGeminiBackend
+
+    for cls in (HubGeminiBackend, VertexAIBackend):
+        status = "[green]Available[/green]" if cls.is_available() else "[red]Not installed[/red]"
+        table.add_row(cls.name, status, "Yes")
 
     console.print(table)
 
@@ -283,12 +293,20 @@ def backends() -> None:
 
 
 def _build_backend_kwargs(settings, dry_run: bool = False) -> dict:
-    """Build kwargs dict for the Vertex AI backend from resolved settings."""
+    """Build kwargs dict for the active backend from resolved settings.
+
+    For the ``hubgemini`` backend the model id is the stable hub alias
+    (``HUB_MODEL``); the Vertex display-name model and Vertex auth are ignored
+    by that backend but passed through harmlessly for interface parity.
+    """
+    from src.config import HUB_MODEL
+
     vai = settings.vertexai
+    model_id = HUB_MODEL if settings.backend == "hubgemini" else vai.model
     return {
         "project_id": vai.project_id,
         "location": vai.location,
-        "model_id": vai.model,
+        "model_id": model_id,
         "auth_mode": vai.auth_mode,
         "refine_iterations": vai.refine_iterations,
         "clean_stop_max_errors": vai.clean_stop_max_errors,

@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+from src.hub_gemini_backend import HubGeminiBackend
 from src.vertexai_backend import VertexAIBackend
 from src.classifier import classify_pdf
 from src.models import ConversionResult
@@ -14,6 +15,17 @@ from src.postprocess import postprocess
 from src.validation import validate
 
 logger = logging.getLogger("pipeline")
+
+# Backend registry — name → backend class. Both expose the same
+# ``convert()`` contract and metadata shape, so callers select by name.
+_BACKENDS: dict[str, type] = {
+    HubGeminiBackend.name: HubGeminiBackend,
+    VertexAIBackend.name: VertexAIBackend,
+}
+
+# Default backend: route through the local LLM hub (issue #27). VertexAI
+# remains available as an explicit fallback (``backend="vertexai"``).
+DEFAULT_BACKEND = HubGeminiBackend.name
 
 
 class Pipeline:
@@ -26,12 +38,14 @@ class Pipeline:
         backend: str | None = None,
         postprocess_options: dict | None = None,
     ) -> None:
-        self._backend_name = backend
+        self._backend_name = backend or DEFAULT_BACKEND
         self._postprocess_options = postprocess_options or {}
 
-        # VertexAI is the only backend; validate if an explicit name was given
-        if backend is not None and backend != "vertexai":
-            raise ValueError(f"Unknown backend '{backend}'. Only 'vertexai' is available.")
+        if self._backend_name not in _BACKENDS:
+            raise ValueError(
+                f"Unknown backend '{self._backend_name}'. "
+                f"Available: {sorted(_BACKENDS)}."
+            )
 
     def convert(
         self,
@@ -91,8 +105,8 @@ class Pipeline:
                 pdf_info.avg_chars_per_page,
             )
 
-            # Select backend — VertexAI is the only backend
-            backend = VertexAIBackend()
+            # Select backend from the registry by resolved name
+            backend = _BACKENDS[self._backend_name]()
 
             logger.info("Using backend: %s", backend.name)
 

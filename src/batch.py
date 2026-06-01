@@ -15,7 +15,6 @@ from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.config import Settings
 from src.models import ChunkResult, ConversionResult
 from src.pipeline import Pipeline
-from src.vertexai_backend import VertexAIBackend
 
 logger = logging.getLogger("batch")
 
@@ -101,7 +100,7 @@ def run_batch(
         output_dir.mkdir(parents=True, exist_ok=True)
 
     all_results: list[ChunkResult] = []
-    backend_name = VertexAIBackend.name
+    backend_name = settings.backend
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
     workers = settings.processing.workers
@@ -262,7 +261,7 @@ def _process_single(
             chunk_idx=0,
             chunk_pages="all",
             markdown="",
-            backend_used=VertexAIBackend.name,
+            backend_used=settings.backend,
             metadata={},
             error=str(exc),
         )
@@ -333,7 +332,7 @@ def _process_chunked(
         logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
         return [ChunkResult(
             source=pdf_path, chunk_idx=0, chunk_pages="all",
-            markdown="", backend_used=VertexAIBackend.name,
+            markdown="", backend_used=settings.backend,
             metadata={}, error=str(exc),
         )]
 
@@ -363,7 +362,7 @@ def _process_chunked(
             chunk_idx=chunk_idx,
             chunk_pages=pages_label,
             markdown=result.markdown if result else "",
-            backend_used=result.backend_used if result else VertexAIBackend.name,
+            backend_used=result.backend_used if result else settings.backend,
             metadata=meta,
             iteration=meta.get("iterations_completed", 0),
             errors=last_row.get("errors_found", 0),
@@ -397,11 +396,14 @@ def _process_chunked(
 
 
 def _build_backend_kwargs(settings: Settings, dry_run: bool = False) -> dict:
+    from src.config import HUB_MODEL
+
     vai = settings.vertexai
+    model_id = HUB_MODEL if settings.backend == "hubgemini" else vai.model
     return {
         "project_id": vai.project_id or os.getenv("PROJECT_ID", ""),
         "location": vai.location,
-        "model_id": vai.model,
+        "model_id": model_id,
         "auth_mode": vai.auth_mode,
         "refine_iterations": vai.refine_iterations,
         "clean_stop_max_errors": vai.clean_stop_max_errors,

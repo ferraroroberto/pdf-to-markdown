@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from src.config import GEMINI_MODELS, MachineProfile, load_settings, save_settings
+from src.config import BACKENDS, GEMINI_MODELS, MachineProfile, load_settings, save_settings
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -79,7 +79,22 @@ def run() -> None:
 
     # ── Machine settings form ─────────────────────────────────────────────────
     with st.form("settings_form"):
+        st.markdown("#### Backend")
+        _backend_help = (
+            "**hubgemini**: route PDFs through the local LLM hub "
+            "(http://127.0.0.1:8000, no Vertex credentials needed). "
+            "**vertexai**: call Google Vertex AI directly."
+        )
+        new_backend: str = st.selectbox(
+            "Extraction backend",
+            BACKENDS,
+            index=BACKENDS.index(cfg.backend) if cfg.backend in BACKENDS else 0,
+            help=_backend_help,
+        )
+
+        st.markdown("---")
         st.markdown(f"#### Vertex AI — *{edit_machine_name}*")
+        st.caption("Used when the backend is **vertexai**. The **hubgemini** backend ignores these.")
 
         s0 = st.text_input(
             "Machine name",
@@ -240,6 +255,8 @@ def run() -> None:
         if cfg.active_machine == edit_machine_name:
             cfg.active_machine = new_name_stripped
 
+        cfg.backend = new_backend
+
         cfg.processing.chunk_size = int(new_chunk_size)
         cfg.processing.chunk_overlap = int(new_chunk_overlap)
         cfg.processing.workers = int(new_workers)
@@ -281,6 +298,7 @@ def _write_all_machines(cfg) -> None:
 
     data = {
         "active_machine": cfg.active_machine,
+        "backend": cfg.backend,
         "machines": [asdict(m) for m in cfg.machines],
         "processing": asdict(cfg.processing),
         "batch": asdict(cfg.batch),

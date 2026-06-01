@@ -131,6 +131,7 @@ def _run_batch_worker(
         from src.config import load_settings
 
         settings = load_settings({
+            "backend": backend_kwargs.get("backend", load_settings().backend),
             "vertexai": {
                 "project_id": backend_kwargs.get("project_id", ""),
                 "location": backend_kwargs.get("location", "europe-west3"),
@@ -601,6 +602,7 @@ def run() -> None:
                 )
             else:
                 backend_kwargs = {
+                    "backend": cfg.backend,
                     "project_id": st.session_state.get("bt_project_id", ""),
                     "location": st.session_state.get("bt_location", "europe-west3"),
                     "model_id": st.session_state.get("bt_model_id", "gemini-2.5-pro"),
