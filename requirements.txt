@@ -10,7 +10,11 @@ pdfplumber
 marker-pdf; python_version < "3.14"
 docling
 
-# Vertex AI backend (optional — install to enable Gemini extraction)
+# Hub Gemini backend (default) — routes PDFs through the local LLM hub
+# (http://127.0.0.1:8000) via the Anthropic SDK shape with document blocks.
+anthropic
+
+# Vertex AI backend (fallback — install to enable direct Gemini extraction)
 google-genai
 python-dotenv
 

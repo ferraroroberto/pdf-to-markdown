@@ -32,6 +32,11 @@ from src.pipeline import Pipeline
 _PROJECT_ROOT = Path(__file__).parent.parent
 _CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
 
+# Both the Vertex AI and hub Gemini backends emit the same rich metadata
+# contract (extraction_step, refinement_log, raw_responses, token usage), so
+# the verbose-artifact, usage-panel, and refinement-track UI applies to both.
+_GEMINI_STYLE_BACKENDS = frozenset({"vertexai", "hubgemini"})
+
 
 def _list_prompts_by_prefix(prefix: str) -> list[str]:
     """Return all .md files in prompts/ whose filename starts with *prefix*."""
@@ -251,7 +256,7 @@ def _run_conversion(
 
         # In verbose mode, pass save dir to backend so raw AI responses are
         # written to disk immediately after each API call.
-        if verbose and backend == "vertexai":
+        if verbose and backend in _GEMINI_STYLE_BACKENDS:
             kwargs["verbose_save_dir"] = output_dir
             kwargs["verbose_file_stem"] = output_stem
 
@@ -345,7 +350,7 @@ def _run_conversion(
                     )
 
                     chunk_kwargs = dict(kwargs)
-                    if backend == "vertexai":
+                    if backend in _GEMINI_STYLE_BACKENDS:
                         chunk_stem = f"{output_stem}.chunk_{chunk_num:03d}"
                         if verbose:
                             chunk_kwargs["verbose_save_dir"] = output_dir
@@ -383,7 +388,7 @@ def _run_conversion(
                     )
                     merged = "\n\n---\n\n".join(m for m in chunk_markdowns if m and m.strip())
 
-                if backend == "vertexai" and chunk_metas:
+                if backend in _GEMINI_STYLE_BACKENDS and chunk_metas:
                     combined_meta = {
                         **_aggregate_chunked_vertex_metadata(chunk_metas),
                         "chunks": len(chunks),
@@ -417,7 +422,7 @@ def _run_conversion(
                     )
                 else:
                     result = r
-                if result.backend_used == "vertexai":
+                if result.backend_used in _GEMINI_STYLE_BACKENDS:
                     result.metadata["refinement_track_table"] = _build_refinement_track_table(
                         result.metadata, 1, "all",
                     )
@@ -1030,7 +1035,7 @@ def run() -> None:
                 cols[0].metric("Size", f"{size_kb:,.1f} KB")
                 cols[1].metric("Type", file_type)
                 cols[2].metric("Format", p.suffix.upper())
-                st.info("ℹ️ This file will be converted to PDF before extraction. **Vertex AI backend required.**")
+                st.info("ℹ️ This file will be converted to PDF before extraction.")
 
     st.divider()
 
@@ -1224,10 +1229,19 @@ def run() -> None:
 
             _clear_output()
 
+            # Active backend (from config). The hub backend ignores the Vertex
+            # project/location/auth and uses the stable hub model alias.
+            from src.config import HUB_MODEL
+            _backend_name = cfg.backend
+            _model_id = (
+                HUB_MODEL if _backend_name == "hubgemini"
+                else st.session_state.get("vai_model_id", "gemini-2.5-pro")
+            )
+
             extra_kwargs: dict = {
                 "project_id": st.session_state.get("vai_project_id", ""),
                 "location": st.session_state.get("vai_location", "europe-west3"),
-                "model_id": st.session_state.get("vai_model_id", "gemini-2.5-pro"),
+                "model_id": _model_id,
                 "auth_mode": auth_mode,
                 "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
                 "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", 0),
@@ -1246,7 +1260,7 @@ def run() -> None:
 
             thread = threading.Thread(
                 target=_run_conversion,
-                args=(pdf_path, "vertexai", verbose, result_q, log_q),
+                args=(pdf_path, _backend_name, verbose, result_q, log_q),
                 kwargs={
                     "backend_kwargs": extra_kwargs,
                     "chunk_size": chunk_size,
@@ -1326,7 +1340,7 @@ def run() -> None:
             _chunk_md_paths: list[Path] = []
             _chunk_corr_paths: list[Path] = []
             _chunk_pdf_paths: list[Path] = []
-            if st.session_state.get("ex_verbose", False) and result.backend_used == "vertexai":
+            if st.session_state.get("ex_verbose", False) and result.backend_used in _GEMINI_STYLE_BACKENDS:
                 # Save processed markdown snapshots after each step
                 for _idx, _iter_md in enumerate(result.metadata.get("iteration_markdowns", []), 1):
                     _step_path = output_path.with_name(f"{output_path.stem}.step_{_idx:02d}.md")
@@ -1350,7 +1364,7 @@ def run() -> None:
                     _chunk_corr_paths.append(p)
 
             corrections_path: Path | None = None
-            if result.backend_used == "vertexai":
+            if result.backend_used in _GEMINI_STYLE_BACKENDS:
                 corrections_path = _save_corrections_report(result, output_path)
 
             st.subheader("Result")
@@ -1397,7 +1411,7 @@ def run() -> None:
             if corrections_path is not None:
                 st.caption(f"Corrections log: `{corrections_path.name}`")
 
-            if result.backend_used == "vertexai":
+            if result.backend_used in _GEMINI_STYLE_BACKENDS:
                 meta = result.metadata
                 total_in = meta.get("total_input_tokens", 0)
                 total_out = meta.get("total_output_tokens", 0)
@@ -1406,17 +1420,25 @@ def run() -> None:
                 iters_done: int = meta.get("iterations_completed", 0)
                 final_verdict: str = meta.get("final_verdict", "N/A")
 
-                _pricing_data = vertexai_pricing.load_pricing()
-                cost_label, _ = vertexai_pricing.calculate_cost(
-                    model_used, total_in, total_out, _pricing_data
-                )
-
-                st.markdown("#### Vertex AI Usage")
-                st.caption(
-                    f"**Model**: {model_used} · "
-                    f"**Tokens**: {total_in:,} in / {total_out:,} out ({total_tok:,} total) · "
-                    f"**Est. cost**: {cost_label}"
-                )
+                if result.backend_used == "hubgemini":
+                    # The hub's Gemini (agy) path does not surface token counts,
+                    # so cost can't be estimated for this backend.
+                    st.markdown("#### Hub Gemini Usage")
+                    st.caption(
+                        f"**Model**: {model_used} (via local LLM hub) · "
+                        "**Tokens**: not reported by the hub Gemini path"
+                    )
+                else:
+                    _pricing_data = vertexai_pricing.load_pricing()
+                    cost_label, _ = vertexai_pricing.calculate_cost(
+                        model_used, total_in, total_out, _pricing_data
+                    )
+                    st.markdown("#### Vertex AI Usage")
+                    st.caption(
+                        f"**Model**: {model_used} · "
+                        f"**Tokens**: {total_in:,} in / {total_out:,} out ({total_tok:,} total) · "
+                        f"**Est. cost**: {cost_label}"
+                    )
 
                 track_table: list[dict] = meta.get("refinement_track_table") or []
                 chunk_summaries: list[dict] = meta.get("chunk_refine_summaries") or []

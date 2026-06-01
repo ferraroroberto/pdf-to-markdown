@@ -2,6 +2,17 @@
 
 Convert PDF documents into clean, structured, token-efficient Markdown for downstream LLM consumption (RAG, summarization, Q&A).
 
+## Backends
+
+Extraction runs through one of two interchangeable backends, selected by the top-level `backend` key in `src/config.json` (or `--backend` on the CLI, or the Settings tab):
+
+| Backend | `backend` value | How it reaches Gemini | Credentials |
+|---|---|---|---|
+| **Hub Gemini** (default) | `hubgemini` | Routes the PDF as an Anthropic `document` content block to the local LLM hub at `http://127.0.0.1:8000` (alias `gemini_pro`), which forwards it to Gemini. No rasterization — the PDF is sent natively. | None in this app — the hub owns routing and credentials. |
+| **Vertex AI** (fallback) | `vertexai` | Calls Google Vertex AI directly via `google-genai`. | `GOOGLE_API_KEY` (api mode) or ADC (gcloud mode). |
+
+Both backends share the same prompts, chunking, refinement loop, resume, verbose artifacts, and execution-log contract — switching backends changes only the transport. The hub's Gemini path does not surface token counts, so cost estimates are unavailable for `hubgemini` (the usage panel says so); the Vertex AI backend reports full token usage and cost.
+
 ## Architecture
 
 ```
@@ -59,7 +70,8 @@ pdf2md/
 │   ├── pipeline.py         # Single-file orchestrator
 │   ├── postprocess.py      # Markdown cleaning pipeline
 │   ├── validation.py       # Quality validation
-│   ├── vertexai_backend.py # Google Gemini / Vertex AI extraction backend
+│   ├── hub_gemini_backend.py # Default backend — Gemini via the local LLM hub (Anthropic SDK + PDF document blocks)
+│   ├── vertexai_backend.py # Fallback backend — Google Gemini / Vertex AI direct
 │   └── vertexai_pricing.py # Gemini pricing fetch and cache (uses pricing/ folder)
 ├── pricing/
 │   ├── vertexai_pricing_cache.json  # Live pricing cache (JSON)
@@ -94,14 +106,16 @@ python -m venv .venv
 .venv/bin/pip install -r requirements.txt                      # Linux/macOS
 ```
 
-Copy `.env.example` to `.env` and set your API key:
+The **default `hubgemini` backend needs no credentials in this app** — it routes through the local LLM hub at `http://127.0.0.1:8000`, which owns Gemini routing and auth. Just make sure the hub is running.
+
+To use the **`vertexai` fallback backend** instead, copy `.env.example` to `.env` and set your API key:
 
 ```bash
 GOOGLE_API_KEY=your-api-key    # for auth_mode=api
 # (for gcloud mode, use: gcloud auth application-default login)
 ```
 
-All other settings (project ID, location, model, etc.) are configured per **machine profile** in `src/config.json` or via the **Settings** tab in the UI.
+All other Vertex AI settings (project ID, location, model, etc.) are configured per **machine profile** in `src/config.json` or via the **Settings** tab in the UI.
 
 ## Usage
 
@@ -165,7 +179,10 @@ All other settings (project ID, location, model, etc.) are configured per **mach
 # Validate an existing conversion
 .venv\Scripts\python.exe -m src.cli validate document.pdf output/document.md
 
-# List available backend
+# Convert via the Vertex AI backend instead of the default hub
+.venv\Scripts\python.exe -m src.cli convert document.pdf --backend vertexai -o output/
+
+# List available backends
 .venv\Scripts\python.exe -m src.cli backends
 ```
 
@@ -173,7 +190,8 @@ All other settings (project ID, location, model, etc.) are configured per **mach
 
 | Flag | Default | Description |
 |---|---|---|
-| `--auth-mode` | config | `api` \| `gcloud` |
+| `--backend` | config (`hubgemini`) | `hubgemini` (local LLM hub) \| `vertexai` (direct Vertex AI) |
+| `--auth-mode` | config | `api` \| `gcloud` (vertexai backend only) |
 | `--project-id` | config | Google Cloud project ID |
 | `--location` | config | Vertex AI region |
 | `--model` | config | Gemini model ID |
@@ -219,7 +237,7 @@ Machine profiles let you maintain different Vertex AI configurations for differe
 
 ## Multi-file Type Support
 
-The Vertex AI backend can process Word, PowerPoint, and image files in addition to PDFs by converting them to PDF first.
+Both backends can process Word, PowerPoint, and image files in addition to PDFs by converting them to PDF first.
 
 ### Supported input types
 
@@ -280,6 +298,7 @@ All settings live in `src/config.json`. CLI flags and UI selections override the
 ```json
 {
   "active_machine": "Desktop",
+  "backend": "hubgemini",
   "machines": [
     {
       "name": "Desktop",
@@ -508,6 +527,10 @@ Removed redundant sidebar Auth Mode selector. Added a dedicated **Vertex AI** ta
 ### Step 13 — Secure Public Access via Cloudflare Tunnel
 
 Added `launch_server.sh` and `launch_server.bat` scripts that start Streamlit and open a Cloudflare Tunnel in one step, giving a public HTTPS URL without deploying to any cloud. API keys never leave your machine.
+
+### Step 14 — Hub Gemini Backend (default)
+
+Added a second extraction backend, `hubgemini`, that routes the PDF as an Anthropic `document` content block to the local LLM hub (`http://127.0.0.1:8000`, alias `gemini_pro`) instead of calling Vertex AI directly. It is now the default; `vertexai` stays as an explicit fallback. Both share the same prompts, chunking, refinement, and logging contract — only the transport differs. Backend is selectable via the top-level `backend` key in `config.json`, the `--backend` CLI flag, or the Settings tab.
 
 ## Sharing the App — How to Make It Accessible from Another Computer
 
