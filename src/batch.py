@@ -7,12 +7,12 @@ No cross-file merging.  Results are returned as a flat ``list[ChunkResult]``.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Callable
 
 from src.chunker import cleanup_chunks, merge_chunks, split_pdf
-from src.config import Settings
+from src.config import Settings, build_backend_kwargs
+from src.logger_exec import log_conversion_steps
 from src.models import ChunkResult, ConversionResult
 from src.pipeline import Pipeline
 
@@ -105,13 +105,12 @@ def run_batch(
     chunk_overlap = settings.processing.chunk_overlap
     workers = settings.processing.workers
 
-    from src.logger_exec import append_row
-    from src.vertexai_pricing import calculate_cost, load_pricing
+    from src.vertexai_pricing import load_pricing
 
     pricing_data = load_pricing()
 
     pipe = Pipeline(backend=backend_name)
-    backend_kwargs = _build_backend_kwargs(settings, dry_run)
+    backend_kwargs = build_backend_kwargs(settings, dry_run, project_id_env_fallback=True)
 
     for file_idx, pdf_path in enumerate(pdfs, 1):
         _progress(f"[{file_idx}/{len(pdfs)}] {pdf_path.name}")
@@ -122,12 +121,12 @@ def run_batch(
             file_results = _process_chunked(
                 pdf_path, pipe, backend_kwargs, chunk_size, chunk_overlap,
                 validate_output, output_dir, settings, pricing_data,
-                append_row, _progress,
+                _progress,
             )
         else:
             file_results = _process_single(
                 pdf_path, pipe, backend_kwargs, validate_output, output_dir,
-                settings, pricing_data, append_row, _progress,
+                settings, pricing_data, _progress,
             )
 
         all_results.extend(file_results)
@@ -247,7 +246,6 @@ def _process_single(
     output_dir: Path | None,
     settings: Settings,
     pricing_data: dict,
-    append_row,
     progress,
 ) -> list[ChunkResult]:
     from src.vertexai_pricing import calculate_cost
@@ -296,7 +294,7 @@ def _process_single(
         cost_label=cost_label,
     )
 
-    _log_steps(pdf_path, cr, meta, settings, append_row, pricing_data)
+    _log_steps(pdf_path, cr, meta, settings, pricing_data)
     return [cr]
 
 
@@ -310,7 +308,6 @@ def _process_chunked(
     output_dir: Path | None,
     settings: Settings,
     pricing_data: dict,
-    append_row,
     progress,
 ) -> list[ChunkResult]:
     from src.file_converter import needs_conversion as _needs_conv
@@ -323,7 +320,7 @@ def _process_chunked(
         )
         return _process_single(
             pdf_path, pipe, backend_kwargs, validate_output, output_dir,
-            settings, pricing_data, append_row, progress,
+            settings, pricing_data, progress,
         )
 
     try:
@@ -374,7 +371,7 @@ def _process_chunked(
             error=error_msg,
         )
         chunk_results.append(cr)
-        _log_steps(pdf_path, cr, meta, settings, append_row, pricing_data)
+        _log_steps(pdf_path, cr, meta, settings, pricing_data)
 
     # Save merged output
     if output_dir and chunk_results:
@@ -395,97 +392,23 @@ def _process_chunked(
     return chunk_results
 
 
-def _build_backend_kwargs(settings: Settings, dry_run: bool = False) -> dict:
-    from src.config import HUB_MODEL
-
-    vai = settings.vertexai
-    model_id = HUB_MODEL if settings.backend == "hubgemini" else vai.model
-    return {
-        "project_id": vai.project_id or os.getenv("PROJECT_ID", ""),
-        "location": vai.location,
-        "model_id": model_id,
-        "auth_mode": vai.auth_mode,
-        "refine_iterations": vai.refine_iterations,
-        "clean_stop_max_errors": vai.clean_stop_max_errors,
-        "diminishing_returns_enabled": vai.diminishing_returns_enabled,
-        "extraction_prompt_file": vai.extraction_prompt,
-        "refinement_prompt_file": vai.refinement_prompt,
-        "dry_run": dry_run,
-    }
-
-
 def _log_steps(
     pdf_path: Path,
     cr: ChunkResult,
     meta: dict,
     settings: Settings,
-    append_row,
     pricing_data: dict,
 ) -> None:
-    """Write one log row per API call (step 0 = extraction, step N = refinement N)."""
-    from datetime import datetime, timezone
-    from src.vertexai_pricing import calculate_cost
-
-    model = meta.get("model", settings.vertexai.model)
-    auth_mode = meta.get("auth_mode", settings.vertexai.auth_mode)
-    ext_hash = meta.get("extraction_prompt_hash", "")
-    ref_hash = meta.get("refinement_prompt_hash", "")
-    ts = datetime.now(timezone.utc).isoformat()
-
-    def _row(step: int, step_type: str, in_tok: int, out_tok: int,
-             errors: int = 0, critical: int = 0, moderate: int = 0,
-             minor: int = 0, verdict: str = "N/A", error: str | None = None) -> None:
-        cost_label, _ = calculate_cost(model, in_tok, out_tok, pricing_data)
-        append_row({
-            "timestamp": ts,
-            "file": str(pdf_path),
-            "chunk_idx": cr.chunk_idx,
-            "chunk_pages": cr.chunk_pages,
-            "step": step,
-            "step_type": step_type,
-            "model": model,
-            "auth_mode": auth_mode,
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
-            "cost_label": cost_label,
-            "errors": errors,
-            "critical": critical,
-            "moderate": moderate,
-            "minor": minor,
-            "verdict": verdict,
-            "error": error,
-            "extraction_prompt_hash": ext_hash,
-            "refinement_prompt_hash": ref_hash,
-        })
-
-    if cr.error:
-        # Failed chunk: log a single error row
-        _row(step=0, step_type="extraction", in_tok=0, out_tok=0,
-             verdict="ERROR", error=cr.error)
-        return
-
-    # Step 0: extraction
-    extraction_step = meta.get("extraction_step", {})
-    _row(
-        step=0,
-        step_type="extraction",
-        in_tok=extraction_step.get("step_input_tokens",
-               meta.get("total_input_tokens", 0)),
-        out_tok=extraction_step.get("step_output_tokens",
-                meta.get("total_output_tokens", 0)),
+    """Write exec-log rows for a chunk result via the shared logger_exec helper."""
+    log_conversion_steps(
+        file=str(pdf_path),
+        chunk_idx=cr.chunk_idx,
+        chunk_pages=cr.chunk_pages,
+        meta=meta,
+        pricing_data=pricing_data,
+        model=meta.get("model", settings.vertexai.model),
+        auth_mode=meta.get("auth_mode", settings.vertexai.auth_mode),
+        extraction_prompt_hash=meta.get("extraction_prompt_hash", ""),
+        refinement_prompt_hash=meta.get("refinement_prompt_hash", ""),
+        error=cr.error,
     )
-
-    # Steps 1..N: one row per refinement pass
-    for track in meta.get("refinement_log", []):
-        _row(
-            step=track.get("step", track.get("iteration", 0)),
-            step_type="refinement",
-            in_tok=track.get("step_input_tokens", 0),
-            out_tok=track.get("step_output_tokens", 0),
-            errors=track.get("errors_found", 0),
-            critical=track.get("critical", 0),
-            moderate=track.get("moderate", 0),
-            minor=track.get("minor", 0),
-            verdict=track.get("verdict", "N/A"),
-        )

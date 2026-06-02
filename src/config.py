@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -249,6 +250,49 @@ def save_settings(settings: Settings) -> None:
         encoding="utf-8",
     )
     logger.info("ℹ️ Settings saved to %s", _CONFIG_PATH)
+
+
+def build_backend_kwargs(
+    settings: Settings,
+    dry_run: bool = False,
+    *,
+    project_id_env_fallback: bool = False,
+) -> dict[str, Any]:
+    """Build the kwargs dict the active backend's ``convert`` call expects.
+
+    Single source of truth shared by ``src.cli`` and ``src.batch`` so the two
+    entry points cannot drift apart. For the ``hubgemini`` backend the model id
+    is the stable hub alias (:data:`HUB_MODEL`); the Vertex display-name model
+    and Vertex auth are ignored by that backend but passed through harmlessly
+    for interface parity.
+
+    Parameters
+    ----------
+    settings:
+        Resolved :class:`Settings`.
+    dry_run:
+        Pass ``dry_run`` straight through to the backend.
+    project_id_env_fallback:
+        When True, fall back to the ``PROJECT_ID`` env var if the resolved
+        project id is empty (the batch orchestrator's behaviour).
+    """
+    vai = settings.vertexai
+    model_id = HUB_MODEL if settings.backend == "hubgemini" else vai.model
+    project_id = vai.project_id
+    if project_id_env_fallback:
+        project_id = project_id or os.getenv("PROJECT_ID", "")
+    return {
+        "project_id": project_id,
+        "location": vai.location,
+        "model_id": model_id,
+        "auth_mode": vai.auth_mode,
+        "refine_iterations": vai.refine_iterations,
+        "clean_stop_max_errors": vai.clean_stop_max_errors,
+        "diminishing_returns_enabled": vai.diminishing_returns_enabled,
+        "extraction_prompt_file": vai.extraction_prompt,
+        "refinement_prompt_file": vai.refinement_prompt,
+        "dry_run": dry_run,
+    }
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────────

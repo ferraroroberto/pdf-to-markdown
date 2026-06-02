@@ -41,6 +41,7 @@ pdf2md/
 ├── .venv/                  # Virtual environment (not committed)
 ├── app/
 │   ├── app.py              # Streamlit entry point (5 tabs, sidebar machine selector)
+│   ├── _common.py          # Shared UI helpers (TeeStream, QueueHandler, prompt listing, log-box, config-sync)
 │   ├── execute.py          # Convert File tab (resume, per-chunk corrections)
 │   ├── tab_batch.py        # Batch Convert tab
 │   ├── tab_log.py          # History tab
