@@ -2,29 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
 
+from _common import list_extraction_prompts, list_refinement_prompts
 from src.config import BACKENDS, GEMINI_MODELS, MachineProfile, load_settings, save_settings
-
-_PROJECT_ROOT = Path(__file__).parent.parent
-
-
-def _list_prompts_by_prefix(prefix: str) -> list[str]:
-    """Return all .md files in prompts/ whose filename starts with *prefix*."""
-    return sorted(
-        str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
-    )
-
-
-def _list_extraction_prompts() -> list[str]:
-    return _list_prompts_by_prefix("extraction")
-
-
-def _list_refinement_prompts() -> list[str]:
-    return _list_prompts_by_prefix("refinement")
 
 
 def run() -> None:
@@ -136,8 +117,8 @@ def run() -> None:
                 ),
             )
 
-        _ext_prompts = _list_extraction_prompts()
-        _ref_prompts = _list_refinement_prompts()
+        _ext_prompts = list_extraction_prompts()
+        _ref_prompts = list_refinement_prompts()
         s4, s5 = st.columns([3, 3])
         with s4:
             new_ext_prompt: str = st.selectbox(

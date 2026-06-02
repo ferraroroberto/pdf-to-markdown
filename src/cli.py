@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from src.vertexai_backend import VertexAIBackend
-from src.config import load_settings
+from src.config import build_backend_kwargs, load_settings
 from src.logging_config import setup_logging
 from src.models import ConversionResult
 from src.validation import validate as run_validation
@@ -158,7 +158,7 @@ def _run_single(
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
 
-    backend_kwargs = _build_backend_kwargs(settings, dry_run)
+    backend_kwargs = build_backend_kwargs(settings, dry_run)
     pipe = Pipeline(backend=backend_name)
 
     needs_conv = needs_conversion(pdf_path)
@@ -290,31 +290,6 @@ def backends() -> None:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
-
-
-def _build_backend_kwargs(settings, dry_run: bool = False) -> dict:
-    """Build kwargs dict for the active backend from resolved settings.
-
-    For the ``hubgemini`` backend the model id is the stable hub alias
-    (``HUB_MODEL``); the Vertex display-name model and Vertex auth are ignored
-    by that backend but passed through harmlessly for interface parity.
-    """
-    from src.config import HUB_MODEL
-
-    vai = settings.vertexai
-    model_id = HUB_MODEL if settings.backend == "hubgemini" else vai.model
-    return {
-        "project_id": vai.project_id,
-        "location": vai.location,
-        "model_id": model_id,
-        "auth_mode": vai.auth_mode,
-        "refine_iterations": vai.refine_iterations,
-        "clean_stop_max_errors": vai.clean_stop_max_errors,
-        "diminishing_returns_enabled": vai.diminishing_returns_enabled,
-        "extraction_prompt_file": vai.extraction_prompt,
-        "refinement_prompt_file": vai.refinement_prompt,
-        "dry_run": dry_run,
-    }
 
 
 def _resolve_output(pdf_path: Path, output_path: str | None) -> Path | None:

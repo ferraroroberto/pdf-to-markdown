@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import html as _html
 import logging
-import os
 import platform
 import queue
 import sys
@@ -21,84 +19,20 @@ except ModuleNotFoundError:
 
 import streamlit as st
 
+from _common import (
+    QueueHandler,
+    TeeStream,
+    list_extraction_prompts,
+    list_refinement_prompts,
+    render_log_box,
+    sync_config_defaults_on_change,
+)
 from remote_upload import is_remote_session, save_uploaded_files, ACCEPT_TYPES
 from src.config import GEMINI_MODELS, load_settings
 from src.models import ChunkResult
 
-_PROJECT_ROOT = Path(__file__).parent.parent
-_CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
-
-
-def _list_prompts_by_prefix(prefix: str) -> list[str]:
-    """Return all .md files in prompts/ whose filename starts with *prefix*."""
-    return sorted(
-        str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
-    )
-
-
-def _list_extraction_prompts() -> list[str]:
-    return _list_prompts_by_prefix("extraction")
-
-
-def _list_refinement_prompts() -> list[str]:
-    return _list_prompts_by_prefix("refinement")
-
-
 # Gemini model options — shared constant (see src.config.GEMINI_MODELS)
 _VAI_MODELS: list[str] = GEMINI_MODELS
-
-
-# ── Logging / stream plumbing (reuse execute.py helpers) ───────────────────────
-
-class _QueueHandler(logging.Handler):
-    def __init__(self, q: queue.Queue) -> None:
-        super().__init__()
-        self._q = q
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self._q.put(self.format(record))
-
-
-class _TeeStream:
-    def __init__(self, q: queue.Queue, orig) -> None:
-        self._q = q
-        self._orig = orig
-        self._buf = ""
-
-    def write(self, s: str) -> int:
-        try:
-            self._orig.write(s)
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        self._buf += s
-        *lines, self._buf = self._buf.split("\n")
-        for line in lines:
-            clean = line.rstrip("\r").strip()
-            if clean:
-                self._q.put(clean)
-        return len(s)
-
-    def flush(self) -> None:
-        try:
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        if self._buf.strip():
-            self._q.put(self._buf.rstrip("\r").strip())
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        return False
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._orig, "encoding", "utf-8") or "utf-8"
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._orig, "errors", "replace") or "replace"
 
 
 # ── Worker ──────────────────────────────────────────────────────────────────────
@@ -117,11 +51,11 @@ def _run_batch_worker(
     extensions: list[str] | None = None,
 ) -> None:
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
-    sys.stdout = _TeeStream(log_q, orig_stdout)
-    sys.stderr = _TeeStream(log_q, orig_stderr)
+    sys.stdout = TeeStream(log_q, orig_stdout)
+    sys.stderr = TeeStream(log_q, orig_stderr)
 
     root = logging.getLogger()
-    handler = _QueueHandler(log_q)
+    handler = QueueHandler(log_q)
     handler.setFormatter(logging.Formatter("%(levelname)-8s  %(name)s: %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -182,11 +116,11 @@ def _run_pdf_convert_worker(
 ) -> None:
     """Worker for "PDF conversion only" mode — file→PDF, no extraction."""
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
-    sys.stdout = _TeeStream(log_q, orig_stdout)
-    sys.stderr = _TeeStream(log_q, orig_stderr)
+    sys.stdout = TeeStream(log_q, orig_stdout)
+    sys.stderr = TeeStream(log_q, orig_stderr)
 
     root = logging.getLogger()
-    handler = _QueueHandler(log_q)
+    handler = QueueHandler(log_q)
     handler.setFormatter(logging.Formatter("%(levelname)-8s  %(name)s: %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
@@ -235,45 +169,28 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
-def _sync_config_defaults_on_change(running: bool) -> None:
-    """Refresh Batch-tab defaults when config.json changes on disk."""
-    if running:
-        return
-    try:
-        current_mtime = _CONFIG_PATH.stat().st_mtime_ns
-    except OSError:
-        return
+# Widget keys cleared when config.json changes so the Batch-tab widgets
+# re-read the refreshed defaults on the next render.
+_SYNC_POP_KEYS = (
+    "bt_recursive_check",
+    "bt_chunk_size_input",
+    "bt_chunk_overlap_input",
+    "bt_extensions",
+    "bt_project_id",
+    "bt_location",
+    "bt_auth_mode_select",
+    "bt_model_id",
+    "bt_refine_iterations",
+    "bt_extraction_prompt",
+    "bt_refinement_prompt",
+    "bt_clean_stop_max_errors",
+    "bt_diminishing_returns",
+)
 
-    state_key = "bt_config_mtime_ns"
-    previous_mtime = st.session_state.get(state_key)
-    if previous_mtime is None:
-        st.session_state[state_key] = current_mtime
-        return
-    if previous_mtime == current_mtime:
-        return
 
-    cfg = load_settings()
-    vai = cfg.vertexai
-    proc = cfg.processing
-
-    st.session_state[state_key] = current_mtime
-    st.session_state["bt_chunk_size"] = proc.chunk_size
-    st.session_state["bt_chunk_overlap"] = proc.chunk_overlap
+def _sync_batch_extra(cfg) -> None:
+    """Batch-only default not covered by the shared sync: recursive scan."""
     st.session_state["bt_recursive"] = cfg.batch.recursive
-    st.session_state["bt_diminishing_returns"] = vai.diminishing_returns_enabled
-    st.session_state.pop("bt_recursive_check", None)
-    st.session_state.pop("bt_chunk_size_input", None)
-    st.session_state.pop("bt_chunk_overlap_input", None)
-    st.session_state.pop("bt_extensions", None)
-    st.session_state.pop("bt_project_id", None)
-    st.session_state.pop("bt_location", None)
-    st.session_state.pop("bt_auth_mode_select", None)
-    st.session_state.pop("bt_model_id", None)
-    st.session_state.pop("bt_refine_iterations", None)
-    st.session_state.pop("bt_extraction_prompt", None)
-    st.session_state.pop("bt_refinement_prompt", None)
-    st.session_state.pop("bt_clean_stop_max_errors", None)
-    st.session_state.pop("bt_diminishing_returns", None)
 
 
 # ── Tab UI ──────────────────────────────────────────────────────────────────────
@@ -287,7 +204,9 @@ def run() -> None:
     proc = cfg.processing
 
     running: bool = st.session_state.bt_running
-    _sync_config_defaults_on_change(running)
+    sync_config_defaults_on_change(
+        running, prefix="bt_", pop_keys=_SYNC_POP_KEYS, extra=_sync_batch_extra,
+    )
 
     st.subheader("Batch Folder Processing")
 
@@ -472,8 +391,8 @@ def run() -> None:
         )
 
         # Row 3: Extraction Prompt | Refinement Prompt
-        _ext_prompts = _list_extraction_prompts()
-        _ref_prompts = _list_refinement_prompts()
+        _ext_prompts = list_extraction_prompts()
+        _ref_prompts = list_refinement_prompts()
         vb7, vb8 = st.columns([3, 3])
         with vb7:
             _ext_default = vai.extraction_prompt
@@ -661,21 +580,7 @@ def run() -> None:
 
     # ── Render logs ─────────────────────────────────────────────────────────
     if st.session_state.bt_logs:
-        log_html = _html.escape("\n".join(st.session_state.bt_logs))
-        _log_id = "bt_log_box"
-        st.markdown(
-            f"""<div style="margin-bottom:1rem">
-                <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">Execution Log</div>
-                <div id="{_log_id}" style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
-                    border-radius:6px;padding:12px 16px;font-family:'SFMono-Regular',Consolas,monospace;
-                    font-size:0.78rem;line-height:1.55;white-space:pre;color:#e6edf3">{log_html}</div>
-            </div>
-            <script>
-                var el = document.getElementById("{_log_id}");
-                if (el) el.scrollTop = el.scrollHeight;
-            </script>""",
-            unsafe_allow_html=True,
-        )
+        render_log_box("bt_log_box", st.session_state.bt_logs)
 
     # ── Results table ───────────────────────────────────────────────────────
     result_payload = st.session_state.bt_result

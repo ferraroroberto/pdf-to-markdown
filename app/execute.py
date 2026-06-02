@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import itertools
 import logging
 import os
@@ -21,99 +20,32 @@ from pathlib import Path
 
 import streamlit as st
 
+from _common import (
+    QueueHandler,
+    TeeStream,
+    list_extraction_prompts,
+    list_refinement_prompts,
+    render_log_box,
+    sync_config_defaults_on_change,
+)
 from remote_upload import is_remote_session, save_uploaded_file, ACCEPT_TYPES
 from src import vertexai_pricing
 from src.classifier import classify_pdf
 from src.config import GEMINI_MODELS, load_settings
+from src.logger_exec import log_conversion_steps
 from src.logging_config import get_file_handler
 from src.models import ConversionResult
 from src.pipeline import Pipeline
-
-_PROJECT_ROOT = Path(__file__).parent.parent
-_CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
 
 # Both the Vertex AI and hub Gemini backends emit the same rich metadata
 # contract (extraction_step, refinement_log, raw_responses, token usage), so
 # the verbose-artifact, usage-panel, and refinement-track UI applies to both.
 _GEMINI_STYLE_BACKENDS = frozenset({"vertexai", "hubgemini"})
 
-
-def _list_prompts_by_prefix(prefix: str) -> list[str]:
-    """Return all .md files in prompts/ whose filename starts with *prefix*."""
-    return sorted(
-        str(p.relative_to(_PROJECT_ROOT))
-        for p in (_PROJECT_ROOT / "prompts").glob(f"{prefix}*.md")
-    )
-
-
-def _list_extraction_prompts() -> list[str]:
-    return _list_prompts_by_prefix("extraction")
-
-
-def _list_refinement_prompts() -> list[str]:
-    return _list_prompts_by_prefix("refinement")
-
-
 # Gemini model options shown in the UI (order = dropdown order).
 # Sourced from the single shared constant in src.config so the Execute, Batch,
 # and Settings dropdowns and config.json never drift apart.
 _VAI_MODELS: list[str] = GEMINI_MODELS
-
-
-# ── Stream tee ─────────────────────────────────────────────────────────────────
-
-
-class _TeeStream(io.TextIOBase):
-    def __init__(self, log_queue: queue.Queue, original: io.TextIOBase) -> None:
-        self._q = log_queue
-        self._orig = original
-        self._buf = ""
-
-    def write(self, s: str) -> int:
-        try:
-            self._orig.write(s)
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        self._buf += s
-        *lines, self._buf = self._buf.split("\n")
-        for line in lines:
-            clean = line.rstrip("\r").strip()
-            if clean:
-                self._q.put(clean)
-        return len(s)
-
-    def flush(self) -> None:
-        try:
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        if self._buf.strip():
-            self._q.put(self._buf.rstrip("\r").strip())
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        return False
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._orig, "encoding", "utf-8") or "utf-8"
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._orig, "errors", "replace") or "replace"
-
-
-# ── Logging helper ──────────────────────────────────────────────────────────────
-
-
-class _QueueHandler(logging.Handler):
-    def __init__(self, log_queue: queue.Queue) -> None:
-        super().__init__()
-        self.log_queue = log_queue
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.log_queue.put(self.format(record))
 
 
 # ── Prior artifact cleanup (Execute tab) ────────────────────────────────────────
@@ -221,11 +153,11 @@ def _run_conversion(
     import tempfile as _tempfile
 
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
-    sys.stdout = _TeeStream(log_queue, orig_stdout)
-    sys.stderr = _TeeStream(log_queue, orig_stderr)
+    sys.stdout = TeeStream(log_queue, orig_stdout)
+    sys.stderr = TeeStream(log_queue, orig_stderr)
 
     root = logging.getLogger()
-    handler = _QueueHandler(log_queue)
+    handler = QueueHandler(log_queue)
     handler.setFormatter(logging.Formatter("%(levelname)-8s  %(name)s: %(message)s"))
     handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     root.addHandler(handler)
@@ -284,9 +216,11 @@ def _run_conversion(
                 working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
 
         try:
+            from src.vertexai_pricing import load_pricing
+            pricing_data = load_pricing()
+
             if chunk_size > 0:
                 from src.chunker import merge_chunks, split_pdf
-                from src.logger_exec import append_row
 
                 # Chunks are written directly to output_dir with consistent naming
                 # ({stem}.chunk_NNN.pdf) so they persist for resume and inspection.
@@ -372,7 +306,7 @@ def _run_conversion(
                         if corr:
                             root.debug("Saved chunk %d corrections → %s", chunk_num, corr.name)
 
-                        _log_steps(pdf_path, chunk_idx, pages_label, r, append_row)
+                        _log_conversion_steps(str(pdf_path), chunk_idx, pages_label, r, pricing_data)
                     except Exception as exc:  # noqa: BLE001
                         root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
                         chunk_markdowns.append(
@@ -407,7 +341,6 @@ def _run_conversion(
                     metadata=combined_meta,
                 )
             else:
-                from src.logger_exec import append_row
                 # If we pre-converted (verbose + non-PDF), use the saved PDF path
                 # directly so the pipeline skips internal conversion.
                 r = pipe.convert(working_pdf, validate_output=False, **kwargs)
@@ -426,7 +359,7 @@ def _run_conversion(
                     result.metadata["refinement_track_table"] = _build_refinement_track_table(
                         result.metadata, 1, "all",
                     )
-                _log_steps(pdf_path, 0, "all", result, append_row)
+                _log_conversion_steps(str(pdf_path), 0, "all", result, pricing_data)
 
         finally:
             if _tmp_conv_dir is not None:
@@ -567,74 +500,26 @@ def _aggregate_chunked_vertex_metadata(
     }
 
 
-def _log_steps(
-    pdf_path: Path,
+def _log_conversion_steps(
+    file: str,
     chunk_idx: int,
     chunk_pages: str,
     result: ConversionResult,
-    append_row,
+    pricing_data: dict,
 ) -> None:
-    """Write one log row per API call: step 0 = extraction, step N = refinement pass N."""
-    from datetime import datetime, timezone
-    from src.vertexai_pricing import calculate_cost, load_pricing
-
+    """Write exec-log rows for *result* via the shared logger_exec helper."""
     meta = result.metadata
-    pricing = load_pricing()
-    model = meta.get("model", "")
-    auth_mode = meta.get("auth_mode", "")
-    ext_hash = meta.get("extraction_prompt_hash", "")
-    ref_hash = meta.get("refinement_prompt_hash", "")
-    ts = datetime.now(timezone.utc).isoformat()
-
-    def _row(step: int, step_type: str, in_tok: int, out_tok: int,
-             errors: int = 0, critical: int = 0, moderate: int = 0,
-             minor: int = 0, verdict: str = "N/A") -> None:
-        total = in_tok + out_tok
-        cost_label, _ = calculate_cost(model, in_tok, out_tok, pricing)
-        append_row({
-            "timestamp": ts,
-            "file": str(pdf_path),
-            "chunk_idx": chunk_idx,
-            "chunk_pages": chunk_pages,
-            "step": step,
-            "step_type": step_type,
-            "model": model,
-            "auth_mode": auth_mode,
-            "input_tokens": in_tok,
-            "output_tokens": out_tok,
-            "total_tokens": total,
-            "cost_label": cost_label,
-            "errors": errors,
-            "critical": critical,
-            "moderate": moderate,
-            "minor": minor,
-            "verdict": verdict,
-            "extraction_prompt_hash": ext_hash,
-            "refinement_prompt_hash": ref_hash,
-        })
-
-    # Step 0: extraction call
-    extraction_step = meta.get("extraction_step", {})
-    _row(
-        step=0,
-        step_type="extraction",
-        in_tok=extraction_step.get("step_input_tokens", meta.get("total_input_tokens", 0)),
-        out_tok=extraction_step.get("step_output_tokens", meta.get("total_output_tokens", 0)),
+    log_conversion_steps(
+        file=file,
+        chunk_idx=chunk_idx,
+        chunk_pages=chunk_pages,
+        meta=meta,
+        pricing_data=pricing_data,
+        model=meta.get("model", ""),
+        auth_mode=meta.get("auth_mode", ""),
+        extraction_prompt_hash=meta.get("extraction_prompt_hash", ""),
+        refinement_prompt_hash=meta.get("refinement_prompt_hash", ""),
     )
-
-    # Steps 1..N: one row per refinement pass
-    for track in meta.get("refinement_log", []):
-        _row(
-            step=track.get("step", track.get("iteration", 0)),
-            step_type="refinement",
-            in_tok=track.get("step_input_tokens", 0),
-            out_tok=track.get("step_output_tokens", 0),
-            errors=track.get("errors_found", 0),
-            critical=track.get("critical", 0),
-            moderate=track.get("moderate", 0),
-            minor=track.get("minor", 0),
-            verdict=track.get("verdict", "N/A"),
-        )
 
 
 # ── Session state bootstrap ─────────────────────────────────────────────────────
@@ -663,42 +548,21 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
-def _sync_config_defaults_on_change(running: bool) -> None:
-    """Refresh Execute-tab defaults when config.json changes on disk."""
-    if running:
-        return
-    try:
-        current_mtime = _CONFIG_PATH.stat().st_mtime_ns
-    except OSError:
-        return
-
-    state_key = "ex_config_mtime_ns"
-    previous_mtime = st.session_state.get(state_key)
-    if previous_mtime is None:
-        st.session_state[state_key] = current_mtime
-        return
-    if previous_mtime == current_mtime:
-        return
-
-    cfg = load_settings()
-    vai_cfg = cfg.vertexai
-    proc_cfg = cfg.processing
-
-    st.session_state[state_key] = current_mtime
-    st.session_state["ex_chunk_size"] = proc_cfg.chunk_size
-    st.session_state["ex_chunk_overlap"] = proc_cfg.chunk_overlap
-    st.session_state["ex_diminishing_returns"] = vai_cfg.diminishing_returns_enabled
-    st.session_state.pop("ex_chunk_size_input", None)
-    st.session_state.pop("ex_chunk_overlap_input", None)
-    st.session_state.pop("vai_project_id", None)
-    st.session_state.pop("vai_location", None)
-    st.session_state.pop("vai_auth_mode", None)
-    st.session_state.pop("vai_model_id", None)
-    st.session_state.pop("vai_refine_iterations", None)
-    st.session_state.pop("vai_extraction_prompt_file", None)
-    st.session_state.pop("vai_refinement_prompt_file", None)
-    st.session_state.pop("vai_clean_stop_max_errors", None)
-    st.session_state.pop("vai_diminishing_returns", None)
+# Widget keys cleared when config.json changes so the Execute-tab widgets
+# re-read the refreshed defaults on the next render.
+_SYNC_POP_KEYS = (
+    "ex_chunk_size_input",
+    "ex_chunk_overlap_input",
+    "vai_project_id",
+    "vai_location",
+    "vai_auth_mode",
+    "vai_model_id",
+    "vai_refine_iterations",
+    "vai_extraction_prompt_file",
+    "vai_refinement_prompt_file",
+    "vai_clean_stop_max_errors",
+    "vai_diminishing_returns",
+)
 
 
 def _clear_output() -> None:
@@ -932,7 +796,7 @@ def run() -> None:
     proc_cfg = cfg.processing
 
     running: bool = st.session_state.ex_running
-    _sync_config_defaults_on_change(running)
+    sync_config_defaults_on_change(running, prefix="ex_", pop_keys=_SYNC_POP_KEYS)
 
     # ── 1. File selection ───────────────────────────────────────────────────
     st.subheader("Select File")
@@ -1126,8 +990,8 @@ def run() -> None:
         )
 
         # Row 3: Extraction Prompt | Refinement Prompt
-        _ext_prompts = _list_extraction_prompts()
-        _ref_prompts = _list_refinement_prompts()
+        _ext_prompts = list_extraction_prompts()
+        _ref_prompts = list_refinement_prompts()
         adv7, adv8 = st.columns([3, 3])
         with adv7:
             _ext_default = vai_cfg.extraction_prompt
@@ -1304,22 +1168,7 @@ def run() -> None:
 
     # ── 5. Render logs ──────────────────────────────────────────────────────
     if st.session_state.ex_logs:
-        import html as _html
-        log_html = _html.escape("\n".join(st.session_state.ex_logs))
-        _log_id = "ex_log_box"
-        st.markdown(
-            f"""<div style="margin-bottom:1rem">
-                <div style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">Execution Log</div>
-                <div id="{_log_id}" style="height:320px;overflow:auto;background:#0d1117;border:1px solid #30363d;
-                    border-radius:6px;padding:12px 16px;font-family:'SFMono-Regular',Consolas,monospace;
-                    font-size:0.78rem;line-height:1.55;white-space:pre;color:#e6edf3">{log_html}</div>
-            </div>
-            <script>
-                var el = document.getElementById("{_log_id}");
-                if (el) el.scrollTop = el.scrollHeight;
-            </script>""",
-            unsafe_allow_html=True,
-        )
+        render_log_box("ex_log_box", st.session_state.ex_logs)
 
     # ── 6. Show result ──────────────────────────────────────────────────────
     result_payload = st.session_state.ex_result
