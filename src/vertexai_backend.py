@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from src.auth import build_client
+from src.config import DEFAULT_MODEL
 from src.logging_config import log_api_timing
 
 logger = logging.getLogger("vertexai_backend")
@@ -383,7 +384,7 @@ class VertexAIBackend:
 
         project_id: str = str(kwargs.get("project_id", ""))
         location: str = str(kwargs.get("location", "europe-west3"))
-        model_id: str = str(kwargs.get("model_id", "gemini-2.5-pro"))
+        model_id: str = str(kwargs.get("model_id", DEFAULT_MODEL))
         auth_mode: str = str(kwargs.get("auth_mode", "api"))
         refine_iterations: int = int(kwargs.get("refine_iterations", 0))  # type: ignore[arg-type]
         clean_stop_max_errors: int = int(kwargs.get("clean_stop_max_errors", 0))  # type: ignore[arg-type]

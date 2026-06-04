@@ -16,7 +16,7 @@ import inspect
 import json
 from pathlib import Path
 
-from src.config import GEMINI_MODELS, _CONFIG_PATH, load_settings
+from src.config import DEFAULT_MODEL, GEMINI_MODELS, _CONFIG_PATH, load_settings
 from src.vertexai_backend import VertexAIBackend, _resolve_prompt_path
 from src.vertexai_pricing import _FALLBACK_PRICING, calculate_cost
 
@@ -89,6 +89,34 @@ class TestModelIdConsistency:
             assert '"gemini-2.5-pro", "gemini-2.5-flash"' not in text, (
                 f"{filename} still has an inline hard-coded model list"
             )
+
+
+# ---------------------------------------------------------------------------
+# Cluster B — the default-model fallback is single-sourced (issue #22)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultModelSingleSource:
+    def test_default_model_is_first_dropdown_entry(self):
+        assert DEFAULT_MODEL == GEMINI_MODELS[0]
+
+    def test_no_scattered_model_fallback_literals(self):
+        """No UI/backend ``.get(..., "gemini-2.5-pro")`` fallback literals remain.
+
+        The canonical default must flow from ``config.DEFAULT_MODEL``. Pricing
+        tables and docstring examples legitimately name the model, so this guard
+        targets only the ``.get(...)`` / ``next(iter(...), ...)`` fallback form.
+        """
+        repo_root = Path(__file__).resolve().parent.parent
+        offenders: list[str] = []
+        for rel in ("app/execute.py", "app/tab_batch.py", "src/vertexai_backend.py"):
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for marker in (', "gemini-2.5-pro")', ", 'gemini-2.5-pro')"):
+                if marker in text:
+                    offenders.append(rel)
+        assert not offenders, (
+            f"scattered model fallback literal still present in: {offenders}"
+        )
 
 
 # ---------------------------------------------------------------------------
