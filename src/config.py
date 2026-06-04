@@ -36,6 +36,12 @@ GEMINI_MODELS: list[str] = [
     "gemini-3.1-flash-lite-preview",
 ]
 
+# Canonical default Gemini model id — the first entry of GEMINI_MODELS. Every
+# ``.get(..., DEFAULT_MODEL)`` fallback in the UI and backend sources this single
+# constant so scattered ``"gemini-2.5-pro"`` literals can no longer drift apart
+# from config.json or the dropdown list. Change the model only here.
+DEFAULT_MODEL: str = GEMINI_MODELS[0]
+
 # Extraction backends selectable from the CLI / UI. ``hubgemini`` routes PDFs
 # through the local LLM hub (default, issue #27); ``vertexai`` calls Google
 # Vertex AI directly (fallback). Keep in sync with ``src.pipeline._BACKENDS``.
@@ -57,7 +63,7 @@ class MachineProfile:
     name: str = "Default"
     project_id: str = ""
     location: str = "europe-west3"
-    model: str = "gemini-2.5-pro"
+    model: str = DEFAULT_MODEL
     auth_mode: str = "api"
     refine_iterations: int = 0
     clean_stop_max_errors: int = 0
@@ -72,7 +78,7 @@ class VertexAISettings:
 
     project_id: str = ""
     location: str = "europe-west3"
-    model: str = "gemini-2.5-pro"
+    model: str = DEFAULT_MODEL
     auth_mode: str = "api"
     refine_iterations: int = 0
     clean_stop_max_errors: int = 0
@@ -140,7 +146,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
             name=str(m.get("name", "Default")),
             project_id=str(m.get("project_id", "")),
             location=str(m.get("location", "europe-west3")),
-            model=str(m.get("model", "gemini-2.5-pro")),
+            model=str(m.get("model", DEFAULT_MODEL)),
             auth_mode=str(m.get("auth_mode", "api")),
             refine_iterations=int(m.get("refine_iterations", 0)),
             clean_stop_max_errors=int(m.get("clean_stop_max_errors", 0)),

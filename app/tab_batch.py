@@ -28,7 +28,7 @@ from _common import (
     sync_config_defaults_on_change,
 )
 from remote_upload import is_remote_session, save_uploaded_files, ACCEPT_TYPES
-from src.config import GEMINI_MODELS, load_settings
+from src.config import DEFAULT_MODEL, GEMINI_MODELS, load_settings
 from src.models import ChunkResult
 
 # Gemini model options — shared constant (see src.config.GEMINI_MODELS)
@@ -69,7 +69,7 @@ def _run_batch_worker(
             "vertexai": {
                 "project_id": backend_kwargs.get("project_id", ""),
                 "location": backend_kwargs.get("location", "europe-west3"),
-                "model": backend_kwargs.get("model_id", "gemini-2.5-pro"),
+                "model": backend_kwargs.get("model_id", DEFAULT_MODEL),
                 "auth_mode": backend_kwargs.get("auth_mode", "api"),
                 "refine_iterations": backend_kwargs.get("refine_iterations", 0),
                 "clean_stop_max_errors": backend_kwargs.get("clean_stop_max_errors", 0),
@@ -524,7 +524,7 @@ def run() -> None:
                     "backend": cfg.backend,
                     "project_id": st.session_state.get("bt_project_id", ""),
                     "location": st.session_state.get("bt_location", "europe-west3"),
-                    "model_id": st.session_state.get("bt_model_id", "gemini-2.5-pro"),
+                    "model_id": st.session_state.get("bt_model_id", DEFAULT_MODEL),
                     "auth_mode": auth_mode,
                     "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
                     "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
@@ -638,7 +638,7 @@ def run() -> None:
 
             from src import vertexai_pricing
             pricing_data = vertexai_pricing.load_pricing()
-            model_for_cost = next(iter(models_used), "gemini-2.5-pro")
+            model_for_cost = next(iter(models_used), DEFAULT_MODEL)
             cost_label, _ = vertexai_pricing.calculate_cost(model_for_cost, total_in, total_out, pricing_data)
 
             _fail_text = f" ({failed} failed)" if failed else ""
