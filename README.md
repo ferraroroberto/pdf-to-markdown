@@ -277,7 +277,7 @@ Both backends can process Word, PowerPoint, and image files in addition to PDFs 
 
 ## Prompts
 
-The Vertex AI backend uses Markdown prompt files from the `prompts/` folder. Both the UI and CLI discover all `.md` files in that folder automatically — add a new file there and it appears as a selectable option immediately. Prompt dropdowns are filtered by type: extraction selectors only show files whose name starts with `extraction`, refinement selectors only show files starting with `refinement`.
+Both Gemini-style backends (`vertexai` and `hubgemini`) use Markdown prompt files from the `prompts/` folder. Both the UI and CLI discover all `.md` files in that folder automatically — add a new file there and it appears as a selectable option immediately. Prompt dropdowns are filtered by type: extraction selectors only show files whose name starts with `extraction`, refinement selectors only show files starting with `refinement`.
 
 | File | Purpose |
 |---|---|
@@ -442,17 +442,17 @@ When **Verbose** is enabled in the **Convert File** tab, intermediate artifacts 
 | File | When created | Content |
 |------|-------------|---------|
 | `{name}.pdf` | Non-PDF source + verbose | Converted PDF, saved before extraction starts |
-| `{name}.raw_step_00.txt` | Vertex AI, verbose | Raw text response from the initial extraction call |
-| `{name}.raw_step_NN.txt` | Vertex AI, verbose + refine | Raw JSON response from refinement pass N |
-| `{name}.step_01.md` | Vertex AI, verbose | Processed markdown after extraction |
-| `{name}.step_NN.md` | Vertex AI, verbose + refine | Processed markdown after refinement pass N |
+| `{name}.raw_step_00.txt` | Verbose | Raw text response from the initial extraction call |
+| `{name}.raw_step_NN.txt` | Verbose + refine | Raw JSON response from refinement pass N |
+| `{name}.step_01.md` | Verbose | Processed markdown after extraction |
+| `{name}.step_NN.md` | Verbose + refine | Processed markdown after refinement pass N |
 | `{name}.chunk_NNN.md` | Verbose + chunking | Markdown for chunk NNN |
 | `{name}.chunk_NNN.pdf` | Verbose + chunking | PDF page-range slice for chunk NNN |
 | `{name}.chunk_NNN.corrections.md` | Chunking (always) | Corrections report for chunk NNN |
 
-## Vertex AI Iterative Refinement
+## Iterative Refinement
 
-Set `--refine-iterations N` (or slider in UI) to run N self-correction passes after extraction. Each pass sends the PDF + current Markdown back to Gemini, which returns a structured JSON correction report. Stops early on `CLEAN` or diminishing returns (unless `diminishing_returns_enabled` is `false`).
+Set `--refine-iterations N` (or slider in UI) to run N self-correction passes after extraction. Both Gemini-style backends (`vertexai` and `hubgemini`) support this: each pass sends the PDF + current Markdown back to Gemini, which returns a structured JSON correction report. Stops early on `CLEAN` or diminishing returns (unless `diminishing_returns_enabled` is `false`).
 
 Recommendation: 1–2 passes for most documents; 3–5 for complex tables / financial reports.
 
