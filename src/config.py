@@ -91,7 +91,6 @@ class VertexAISettings:
 class ProcessingSettings:
     chunk_size: int = 0
     chunk_overlap: int = 1
-    workers: int = 1
     validate_after_convert: bool = False
 
 
@@ -201,7 +200,6 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
         processing=ProcessingSettings(
             chunk_size=int(proc_raw.get("chunk_size", 0)),
             chunk_overlap=int(proc_raw.get("chunk_overlap", 1)),
-            workers=int(proc_raw.get("workers", 1)),
             validate_after_convert=bool(proc_raw.get("validate_after_convert", False)),
         ),
         batch=BatchSettings(

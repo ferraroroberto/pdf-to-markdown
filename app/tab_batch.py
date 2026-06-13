@@ -455,7 +455,7 @@ def run() -> None:
                 "File extensions",
                 options=all_ext_options,
                 default=cfg.batch.extensions,
-                help="File types to include. Non-PDF types require Vertex AI backend.",
+                help="File types to include. Non-PDF types are converted to PDF before extraction and work with any backend.",
                 key="bt_extensions",
                 disabled=running,
             )

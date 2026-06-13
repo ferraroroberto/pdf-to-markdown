@@ -80,9 +80,9 @@ def run_batch(
             on_progress(msg)
 
     logger.debug(
-        "run_batch() — folder=%s, recursive=%s, extensions=%s, chunk_size=%d, workers=%d",
+        "run_batch() — folder=%s, recursive=%s, extensions=%s, chunk_size=%d",
         folder, settings.batch.recursive, settings.batch.extensions,
-        settings.processing.chunk_size, settings.processing.workers,
+        settings.processing.chunk_size,
     )
     pdfs = discover(
         folder,
@@ -103,7 +103,6 @@ def run_batch(
     backend_name = settings.backend
     chunk_size = settings.processing.chunk_size
     chunk_overlap = settings.processing.chunk_overlap
-    workers = settings.processing.workers
 
     from src.vertexai_pricing import load_pricing
 

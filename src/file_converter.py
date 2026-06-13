@@ -1,6 +1,7 @@
 """Pre-processing: convert Office documents and images to PDF before extraction.
 
-Only used for the Vertex AI backend.
+Backend-agnostic: ``Pipeline.convert`` runs ``ensure_pdf`` for every backend, so
+non-PDF inputs are converted to PDF before any backend sees them.
 - Word / PowerPoint / other Office formats → Microsoft Office COM (pywin32) on Windows,
   or docling + PyMuPDF on Unix/Linux → PDF
 - Images (JPEG, PNG, BMP, TIFF, WebP, GIF) → PyMuPDF → single-page PDF
