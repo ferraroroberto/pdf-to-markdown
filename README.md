@@ -201,7 +201,6 @@ All other Vertex AI settings (project ID, location, model, etc.) are configured 
 | `--chunk-size` | config | Pages per chunk (0 = off). Works for all file types. |
 | `--chunk-overlap` | config | Overlap pages between chunks |
 | `--max-chunks` | 0 (all) | Stop after processing this many chunks (0 = all) |
-| `--workers` | config | Parallel workers for batch |
 | `--extensions` | `.pdf` | Comma-separated extensions for batch (e.g. `.pdf,.docx,.pptx`) |
 | `--extraction-prompt` | config | Path to extraction prompt file (relative to project root) |
 | `--refinement-prompt` | config | Path to refinement prompt file (relative to project root) |
@@ -318,7 +317,6 @@ All settings live in `src/config.json`. CLI flags and UI selections override the
   "processing": {
     "chunk_size": 0,
     "chunk_overlap": 1,
-    "workers": 1,
     "validate_after_convert": false
   },
   "batch": {

@@ -69,7 +69,10 @@ _FILE_FMT = (
 )
 _FILE_DATE_FMT = "%Y-%m-%dT%H:%M:%S%z"
 
-# ── Rotating file defaults ─────────────────────────────────────────────────────
+# ── Rotating file fallback defaults ─────────────────────────────────────────────
+# Used only when the configured ``LoggingSettings`` cannot be loaded; the live
+# values come from config.json via ``LoggingSettings.log_max_bytes`` /
+# ``log_backup_count`` (see ``src/config.py``).
 
 _MAX_BYTES = 10 * 1024 * 1024   # 10 MB per file
 _BACKUP_COUNT = 5                # keep up to 5 rotated files
@@ -78,6 +81,8 @@ _BACKUP_COUNT = 5                # keep up to 5 rotated files
 def setup_logging(
     verbose: bool = False,
     log_dir: str | Path | None = None,
+    log_max_bytes: int | None = None,
+    log_backup_count: int | None = None,
 ) -> str:
     """Configure the root logger with console + rotating file handlers.
 
@@ -87,6 +92,14 @@ def setup_logging(
         When *True* the console handler drops to ``DEBUG``; otherwise ``INFO``.
     log_dir:
         Directory for the log file.  Defaults to ``<project_root>/tmp``.
+    log_max_bytes:
+        Max size per log file before rotation.  When ``None`` the value is read
+        from the configured ``LoggingSettings.log_max_bytes`` (config.json),
+        falling back to :data:`_MAX_BYTES`.
+    log_backup_count:
+        Number of rotated log files to keep.  When ``None`` the value is read
+        from the configured ``LoggingSettings.log_backup_count`` (config.json),
+        falling back to :data:`_BACKUP_COUNT`.
 
     Returns
     -------
@@ -96,6 +109,22 @@ def setup_logging(
     global _CONFIGURED, _current_run_id  # noqa: PLW0603
 
     _current_run_id = uuid.uuid4().hex[:8]
+
+    # Resolve rotation knobs from the configured LoggingSettings unless the
+    # caller passed explicit values. Guarded so logging setup never fails on a
+    # bad/missing config.json.
+    if log_max_bytes is None or log_backup_count is None:
+        log_cfg = None
+        try:
+            from src.config import load_settings
+
+            log_cfg = load_settings().logging
+        except Exception:  # noqa: BLE001
+            pass
+        if log_max_bytes is None:
+            log_max_bytes = log_cfg.log_max_bytes if log_cfg else _MAX_BYTES
+        if log_backup_count is None:
+            log_backup_count = log_cfg.log_backup_count if log_cfg else _BACKUP_COUNT
 
     root = logging.getLogger()
 
@@ -124,8 +153,8 @@ def setup_logging(
 
     file_handler = RotatingFileHandler(
         log_path,
-        maxBytes=_MAX_BYTES,
-        backupCount=_BACKUP_COUNT,
+        maxBytes=log_max_bytes,
+        backupCount=log_backup_count,
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)

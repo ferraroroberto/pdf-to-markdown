@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from src.hub_gemini_backend import HubGeminiBackend
@@ -59,7 +58,8 @@ class Pipeline:
         ----------
         pdf_path:
             Path to the input file (PDF, Word, PowerPoint, Excel, or image).
-            Non-PDF types are only supported with the Vertex AI backend.
+            Non-PDF types are pre-converted to PDF first (see
+            ``file_converter.ensure_pdf``), so every backend handles them.
         validate_output:
             If True, run quality validation against the source PDF.
         **backend_kwargs:
@@ -81,7 +81,6 @@ class Pipeline:
                     f"Unsupported file type: {pdf_path.suffix!r}. "
                     f"Supported: .pdf + {sorted(SUPPORTED_EXTENSIONS)}"
                 )
-            pass  # VertexAI handles all supported file types
 
         original_source = pdf_path
 
@@ -145,116 +144,3 @@ class Pipeline:
             time.time() - pipeline_start, backend.name, len(markdown), result.token_estimate,
         )
         return result
-
-    def convert_batch(
-        self,
-        input_path: str | Path,
-        output_dir: str | Path | None = None,
-        workers: int = 1,
-        validate_output: bool = False,
-        extensions: list[str] | None = None,
-        **backend_kwargs: object,
-    ) -> list[ConversionResult]:
-        """Convert all matching files found under *input_path*.
-
-        Parameters
-        ----------
-        input_path:
-            Directory to search for files.
-        output_dir:
-            If given, save each result as ``.md`` in this directory.
-        workers:
-            Number of parallel worker processes.  ``1`` means sequential.
-        validate_output:
-            If True, validate every conversion.
-        extensions:
-            File extensions to match (lower-case, with dot), e.g. ``[".pdf", ".docx"]``.
-            Defaults to ``[".pdf"]``.
-        **backend_kwargs:
-            Extra arguments forwarded to each backend call.
-        """
-        input_path = Path(input_path)
-        exts = {e.lower() for e in (extensions or [".pdf"])}
-        pattern = "**/*"
-        pdfs = sorted(
-            p for p in input_path.glob(pattern)
-            if p.is_file() and p.suffix.lower() in exts
-        )
-        if not pdfs:
-            logger.warning("No matching files found in %s", input_path)
-            return []
-
-        logger.info("Found %d file(s) in %s", len(pdfs), input_path)
-
-        if workers <= 1:
-            results = [
-                self.convert(p, validate_output=validate_output, **backend_kwargs)
-                for p in pdfs
-            ]
-        else:
-            results = self._parallel_convert(
-                pdfs, workers, validate_output, **backend_kwargs
-            )
-
-        # Save results
-        if output_dir is not None:
-            out = Path(output_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            for r in results:
-                md_name = r.source.stem + ".md"
-                r.save(out / md_name)
-
-        passed = sum(1 for r in results if r.validation and r.validation.passed)
-        failed = sum(1 for r in results if r.validation and not r.validation.passed)
-        no_val = sum(1 for r in results if r.validation is None)
-        logger.info(
-            "Batch complete: %d converted (%d passed, %d failed, %d not validated)",
-            len(results), passed, failed, no_val,
-        )
-
-        return results
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _parallel_convert(
-        self,
-        pdfs: list[Path],
-        workers: int,
-        validate_output: bool,
-        **backend_kwargs: object,
-    ) -> list[ConversionResult]:
-        """Process PDFs in parallel using ProcessPoolExecutor."""
-        results: list[ConversionResult] = []
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(
-                    _worker_convert,
-                    pdf,
-                    self._backend_name,
-                    self._postprocess_options,
-                    validate_output,
-                    backend_kwargs,
-                ): pdf
-                for pdf in pdfs
-            }
-            for future in futures:
-                try:
-                    results.append(future.result())
-                except Exception as exc:
-                    pdf = futures[future]
-                    logger.error("Failed to convert %s: %s", pdf, exc)
-        return results
-
-
-def _worker_convert(
-    pdf_path: Path,
-    backend_name: str | None,
-    postprocess_options: dict,
-    validate_output: bool,
-    backend_kwargs: dict,
-) -> ConversionResult:
-    """Top-level function so ProcessPoolExecutor can pickle it."""
-    pipeline = Pipeline(backend=backend_name, postprocess_options=postprocess_options)
-    return pipeline.convert(pdf_path, validate_output=validate_output, **backend_kwargs)

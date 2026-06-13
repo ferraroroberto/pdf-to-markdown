@@ -18,7 +18,6 @@
   "processing": {
     "chunk_size": 0,
     "chunk_overlap": 1,
-    "workers": 1,
     "validate_after_convert": false
   },
   "batch": {

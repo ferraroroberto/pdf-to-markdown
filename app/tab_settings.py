@@ -135,7 +135,7 @@ def run() -> None:
 
         st.markdown("---")
         st.markdown("#### Processing")
-        p1, p2, p3 = st.columns([2, 2, 2])
+        p1, p2 = st.columns([2, 2])
         with p1:
             new_chunk_size = st.number_input(
                 "Chunk Size (pages)", min_value=0, value=cfg.processing.chunk_size, step=5
@@ -143,10 +143,6 @@ def run() -> None:
         with p2:
             new_chunk_overlap = st.number_input(
                 "Chunk Overlap (pages)", min_value=0, value=cfg.processing.chunk_overlap, step=1
-            )
-        with p3:
-            new_workers = st.number_input(
-                "Workers", min_value=1, value=cfg.processing.workers, step=1
             )
 
         new_validate = st.checkbox(
@@ -240,7 +236,6 @@ def run() -> None:
 
         cfg.processing.chunk_size = int(new_chunk_size)
         cfg.processing.chunk_overlap = int(new_chunk_overlap)
-        cfg.processing.workers = int(new_workers)
         cfg.processing.validate_after_convert = new_validate
 
         cfg.batch.recursive = new_recursive

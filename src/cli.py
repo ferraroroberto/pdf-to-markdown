@@ -52,8 +52,6 @@ def main() -> None:
               help="Overlap pages between chunks to preserve context (default: 1).")
 @click.option("--max-chunks", type=int, default=None,
               help="Stop after processing this many chunks (0 = all). Useful for testing large documents.")
-@click.option("--workers", type=int, default=None,
-              help="Parallel workers for batch processing.")
 @click.option("--extensions", default=None,
               help="Comma-separated file extensions for batch (e.g. '.pdf,.docx,.pptx'). Default: from config.")
 @click.option("--extraction-prompt", default=None,
@@ -77,7 +75,6 @@ def convert(
     chunk_size: int | None,
     chunk_overlap: int | None,
     max_chunks: int | None,
-    workers: int | None,
     extensions: str | None,
     extraction_prompt: str | None,
     refinement_prompt: str | None,
@@ -114,8 +111,6 @@ def convert(
         proc_overrides["chunk_size"] = chunk_size
     if chunk_overlap is not None:
         proc_overrides["chunk_overlap"] = chunk_overlap
-    if workers is not None:
-        proc_overrides["workers"] = workers
 
     _max_chunks: int = max_chunks if max_chunks is not None else 0
 
