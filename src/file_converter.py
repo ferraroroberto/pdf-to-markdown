@@ -33,8 +33,14 @@ IMAGE_EXTENSIONS: frozenset[str] = frozenset({
     ".tiff", ".tif", ".webp", ".gif",
 })
 
-# All supported non-PDF extensions
+# All supported non-PDF extensions (i.e. those that need pre-conversion to PDF)
 SUPPORTED_EXTENSIONS: frozenset[str] = OFFICE_EXTENSIONS | IMAGE_EXTENSIONS
+
+# Every extension the pipeline accepts as direct input: native PDF plus every
+# format ``convert_to_pdf`` can pre-convert. This is the single source of truth
+# for upload/file-picker filters — UI code derives its accept lists from here
+# rather than re-typing the format list.
+INPUT_EXTENSIONS: frozenset[str] = SUPPORTED_EXTENSIONS | frozenset({".pdf"})
 
 
 def needs_conversion(path: Path) -> bool:

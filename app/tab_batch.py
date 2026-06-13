@@ -504,8 +504,8 @@ def run() -> None:
             result_q: queue.Queue = queue.Queue()
 
             if pdf_only:
-                from src.file_converter import SUPPORTED_EXTENSIONS
-                pdf_extensions = sorted(SUPPORTED_EXTENSIONS | {".pdf"})
+                from src.file_converter import INPUT_EXTENSIONS
+                pdf_extensions = sorted(INPUT_EXTENSIONS)
                 thread = threading.Thread(
                     target=_run_pdf_convert_worker,
                     args=(
