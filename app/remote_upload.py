@@ -16,13 +16,14 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.file_converter import INPUT_EXTENSIONS
+
 _UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 
-# File extensions accepted by the app (mirrors execute.py filter)
-SUPPORTED_EXTENSIONS = (
-    "pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls",
-    "jpg", "jpeg", "png", "bmp", "tiff", "tif", "webp", "gif",
-)
+# Accepted upload formats, derived from the single source of truth in
+# ``src.file_converter`` (PDF + every pre-convertible format) — adding a new
+# format there automatically reaches the remote uploader and file pickers.
+SUPPORTED_EXTENSIONS = tuple(sorted(ext.lstrip(".") for ext in INPUT_EXTENSIONS))
 
 ACCEPT_TYPES = [f".{e}" for e in SUPPORTED_EXTENSIONS]
 

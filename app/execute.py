@@ -500,17 +500,23 @@ def run() -> None:
             with col_browse:
                 st.markdown("<div style='padding-top:1.9rem'>", unsafe_allow_html=True)
                 if st.button("Browse...", width="stretch", key="browse_btn", disabled=running):
+                    from src.file_converter import IMAGE_EXTENSIONS, INPUT_EXTENSIONS
+
+                    # Derive the glob patterns from the canonical frozensets so the
+                    # picker never drifts from what the pipeline actually accepts.
+                    all_supported = " ".join(f"*{e}" for e in sorted(INPUT_EXTENSIONS))
+                    image_patterns = " ".join(f"*{e}" for e in sorted(IMAGE_EXTENSIONS))
                     root = tk.Tk()
                     root.withdraw()
                     root.wm_attributes("-topmost", 1)
                     chosen = filedialog.askopenfilename(
                         title="Select a file",
                         filetypes=[
-                            ("All supported files", "*.pdf *.docx *.doc *.pptx *.ppt *.xlsx *.xls *.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                            ("All supported files", all_supported),
                             ("PDF files", "*.pdf"),
                             ("Word documents", "*.docx *.doc"),
                             ("PowerPoint presentations", "*.pptx *.ppt"),
-                            ("Images", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.webp *.gif"),
+                            ("Images", image_patterns),
                             ("All files", "*.*"),
                         ],
                     )
@@ -532,12 +538,12 @@ def run() -> None:
     pdf_path: Path | None = None
 
     if file_path_str:
-        from src.file_converter import SUPPORTED_EXTENSIONS, needs_conversion
+        from src.file_converter import INPUT_EXTENSIONS, needs_conversion
 
         p = Path(file_path_str.strip().strip('"'))
         if not p.exists():
             st.error(f"File not found: `{p}`")
-        elif p.suffix.lower() not in {".pdf"} | SUPPORTED_EXTENSIONS:
+        elif p.suffix.lower() not in INPUT_EXTENSIONS:
             st.error(f"Unsupported file type: `{p.suffix}`. Supported: PDF, Word, PowerPoint, Excel, images.")
         else:
             pdf_path = p

@@ -70,6 +70,7 @@ pdf2md/
 │   ├── models.py           # ConversionResult, ChunkResult, ValidationReport
 │   ├── pipeline.py         # Single-file orchestrator
 │   ├── postprocess.py      # Markdown cleaning pipeline
+│   ├── refinement.py       # Shared extraction→refinement orchestration + prompt/JSON helpers (transport-agnostic)
 │   ├── validation.py       # Quality validation
 │   ├── hub_gemini_backend.py # Default backend — Gemini via the local LLM hub (Anthropic SDK + PDF document blocks)
 │   ├── vertexai_backend.py # Fallback backend — Google Gemini / Vertex AI direct
