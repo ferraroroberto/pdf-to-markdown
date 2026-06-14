@@ -309,86 +309,104 @@ def _process_chunked(
     pricing_data: dict,
     progress,
 ) -> list[ChunkResult]:
+    import shutil as _shutil
+    import tempfile as _tempfile
+
     from src.file_converter import needs_conversion as _needs_conv
     from src.vertexai_pricing import calculate_cost
 
-    if _needs_conv(pdf_path):
-        logger.warning(
-            "⚠️ Chunking is not supported for %s files — processing as whole file",
-            pdf_path.suffix,
-        )
-        return _process_single(
-            pdf_path, pipe, backend_kwargs, validate_output, output_dir,
-            settings, pricing_data, progress,
-        )
-
+    # Pre-convert non-PDF inputs to PDF up front so chunking works uniformly
+    # with the single-file paths (src/cli.py:_run_single and
+    # app/execute.py:_run_conversion both convert-then-chunk) — rather than
+    # degrading the Batch tab to a single whole-file call, which can blow past
+    # model limits for a large Word/PowerPoint.
+    _tmp_conv_dir: Path | None = None
+    working_pdf = pdf_path
     try:
-        chunks = split_pdf(pdf_path, chunk_size=chunk_size, overlap=chunk_overlap)
-    except Exception as exc:
-        logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
-        return [ChunkResult(
-            source=pdf_path, chunk_idx=0, chunk_pages="all",
-            markdown="", backend_used=settings.backend,
-            metadata={}, error=str(exc),
-        )]
-
-    chunk_results: list[ChunkResult] = []
-
-    for chunk_idx, chunk_path, start_page, end_page in chunks:
-        pages_label = f"{start_page}–{end_page}"
-        progress(f"  Chunk {chunk_idx + 1}/{len(chunks)} (pages {pages_label})")
+        if _needs_conv(pdf_path):
+            from src.file_converter import convert_to_pdf
+            try:
+                _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
+                working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+                progress(f"  Converted {pdf_path.name} → {working_pdf.name} (temporary)")
+            except Exception as exc:
+                logger.error("❌ Failed to convert %s to PDF: %s", pdf_path.name, exc)
+                return [ChunkResult(
+                    source=pdf_path, chunk_idx=0, chunk_pages="all",
+                    markdown="", backend_used=settings.backend,
+                    metadata={}, error=str(exc),
+                )]
 
         try:
-            result = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
-            error_msg = None
+            chunks = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
         except Exception as exc:
-            logger.warning("⚠️ Chunk %d of %s failed: %s — skipping", chunk_idx, pdf_path.name, exc)
-            error_msg = str(exc)
-            result = None
+            logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
+            return [ChunkResult(
+                source=pdf_path, chunk_idx=0, chunk_pages="all",
+                markdown="", backend_used=settings.backend,
+                metadata={}, error=str(exc),
+            )]
 
-        meta = result.metadata if result else {}
-        total_in = meta.get("total_input_tokens", 0)
-        total_out = meta.get("total_output_tokens", 0)
-        cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
-        refinement_log: list[dict] = meta.get("refinement_log", [])
-        last_row = refinement_log[-1] if refinement_log else {}
+        chunk_results: list[ChunkResult] = []
 
-        cr = ChunkResult(
-            source=pdf_path,
-            chunk_idx=chunk_idx,
-            chunk_pages=pages_label,
-            markdown=result.markdown if result else "",
-            backend_used=result.backend_used if result else settings.backend,
-            metadata=meta,
-            iteration=meta.get("iterations_completed", 0),
-            errors=last_row.get("errors_found", 0),
-            critical=last_row.get("critical", 0),
-            moderate=last_row.get("moderate", 0),
-            minor=last_row.get("minor", 0),
-            verdict=meta.get("final_verdict", "N/A"),
-            cost_label=cost_label,
-            error=error_msg,
-        )
-        chunk_results.append(cr)
-        _log_steps(pdf_path, cr, meta, settings, pricing_data)
+        for chunk_idx, chunk_path, start_page, end_page in chunks:
+            pages_label = f"{start_page}–{end_page}"
+            progress(f"  Chunk {chunk_idx + 1}/{len(chunks)} (pages {pages_label})")
 
-    # Save merged output
-    if output_dir and chunk_results:
-        merged = merge_chunks(
-            [cr.markdown for cr in chunk_results if not cr.error],
-            chunk_overlap=chunk_overlap,
-        )
-        if merged:
-            out_path = output_dir / (pdf_path.stem + ".md")
-            out_path.write_text(merged, encoding="utf-8")
-            progress(f"  Merged → {out_path.name}")
+            try:
+                result = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
+                error_msg = None
+            except Exception as exc:
+                logger.warning("⚠️ Chunk %d of %s failed: %s — skipping", chunk_idx, pdf_path.name, exc)
+                error_msg = str(exc)
+                result = None
 
-    try:
-        cleanup_chunks(pdf_path)
-    except Exception:  # noqa: BLE001
-        pass
+            meta = result.metadata if result else {}
+            total_in = meta.get("total_input_tokens", 0)
+            total_out = meta.get("total_output_tokens", 0)
+            cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
+            refinement_log: list[dict] = meta.get("refinement_log", [])
+            last_row = refinement_log[-1] if refinement_log else {}
 
-    return chunk_results
+            cr = ChunkResult(
+                source=pdf_path,
+                chunk_idx=chunk_idx,
+                chunk_pages=pages_label,
+                markdown=result.markdown if result else "",
+                backend_used=result.backend_used if result else settings.backend,
+                metadata=meta,
+                iteration=meta.get("iterations_completed", 0),
+                errors=last_row.get("errors_found", 0),
+                critical=last_row.get("critical", 0),
+                moderate=last_row.get("moderate", 0),
+                minor=last_row.get("minor", 0),
+                verdict=meta.get("final_verdict", "N/A"),
+                cost_label=cost_label,
+                error=error_msg,
+            )
+            chunk_results.append(cr)
+            _log_steps(pdf_path, cr, meta, settings, pricing_data)
+
+        # Save merged output
+        if output_dir and chunk_results:
+            merged = merge_chunks(
+                [cr.markdown for cr in chunk_results if not cr.error],
+                chunk_overlap=chunk_overlap,
+            )
+            if merged:
+                out_path = output_dir / (pdf_path.stem + ".md")
+                out_path.write_text(merged, encoding="utf-8")
+                progress(f"  Merged → {out_path.name}")
+
+        try:
+            cleanup_chunks(working_pdf)
+        except Exception:  # noqa: BLE001
+            pass
+
+        return chunk_results
+    finally:
+        if _tmp_conv_dir is not None:
+            _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
 
 
 def _log_steps(
