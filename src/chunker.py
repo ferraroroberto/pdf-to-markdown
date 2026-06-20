@@ -7,8 +7,11 @@ Design notes
 ------------
 - Each chunk is an independent PDF slice written to a temp file.  The pipeline
   processes it identically to a single-file run (classify → backend → postprocess).
-- Chunk files are written to a ``_chunks/`` subfolder next to the source PDF
-  and are deleted automatically after the caller finishes (or kept on error).
+- Chunk files are written as flat ``{stem}.chunk_NNN.pdf`` files alongside the
+  source PDF (the primary layout used by the Execute tab).  The legacy
+  ``_chunks_{stem}/`` subfolder is used only when ``output_dir``/``file_stem``
+  are omitted (e.g. batch mode).  Files are deleted automatically after the
+  caller finishes (or kept on error).
 - ``overlap`` adds trailing pages from the previous chunk to the start of the
   next chunk, preserving context across boundaries (e.g. tables that span pages).
 - ``merge()`` joins chunk markdowns with a ``---`` page-break separator so
