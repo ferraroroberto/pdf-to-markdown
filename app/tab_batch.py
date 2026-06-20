@@ -41,14 +41,11 @@ _VAI_MODELS: list[str] = GEMINI_MODELS
 def _run_batch_worker(
     folder: Path,
     output_dir: Path,
-    backend_kwargs: dict,
-    chunk_size: int,
-    chunk_overlap: int,
-    recursive: bool,
+    overrides: dict,
+    dry_run: bool,
     verbose: bool,
     result_q: queue.Queue,
     log_q: queue.Queue,
-    extensions: list[str] | None = None,
 ) -> None:
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = TeeStream(log_q, orig_stdout)
@@ -62,37 +59,19 @@ def _run_batch_worker(
 
     try:
         from src.batch import run_batch
-        from src.config import load_settings
 
-        settings = load_settings({
-            "backend": backend_kwargs.get("backend", load_settings().backend),
-            "vertexai": {
-                "project_id": backend_kwargs.get("project_id", ""),
-                "location": backend_kwargs.get("location", "europe-west3"),
-                "model": backend_kwargs.get("model_id", DEFAULT_MODEL),
-                "auth_mode": backend_kwargs.get("auth_mode", "api"),
-                "refine_iterations": backend_kwargs.get("refine_iterations", 0),
-                "clean_stop_max_errors": backend_kwargs.get("clean_stop_max_errors", 0),
-                "diminishing_returns_enabled": backend_kwargs.get("diminishing_returns_enabled", True),
-                "extraction_prompt": backend_kwargs.get("extraction_prompt_file", "prompts/extraction.md"),
-                "refinement_prompt": backend_kwargs.get("refinement_prompt_file", "prompts/refinement.md"),
-            },
-            "processing": {
-                "chunk_size": chunk_size,
-                "chunk_overlap": chunk_overlap,
-            },
-            "batch": {
-                "recursive": recursive,
-                "extensions": extensions or [".pdf"],
-            },
-        })
+        # *overrides* is the config.json-shaped override block assembled in
+        # run(); run_batch() resolves it through build_backend_kwargs (the
+        # CLI/batch single source of truth), so the kwarg set is not re-listed
+        # here.
+        settings = load_settings(overrides)
 
         results = run_batch(
             folder=folder,
             output_dir=output_dir,
             settings=settings,
             validate_output=False,
-            dry_run=backend_kwargs.get("dry_run", False),
+            dry_run=dry_run,
             on_progress=lambda msg: log_q.put(msg),
         )
         result_q.put(("ok", results))
@@ -520,33 +499,43 @@ def run() -> None:
                     daemon=True,
                 )
             else:
-                backend_kwargs = {
+                # config.json-shaped override block — resolved into a Settings
+                # (and then build_backend_kwargs) inside the worker, so the
+                # backend kwarg set is assembled exactly once and never drifts
+                # from the CLI/batch defaults.
+                overrides = {
                     "backend": cfg.backend,
-                    "project_id": st.session_state.get("bt_project_id", ""),
-                    "location": st.session_state.get("bt_location", "europe-west3"),
-                    "model_id": st.session_state.get("bt_model_id", DEFAULT_MODEL),
-                    "auth_mode": auth_mode,
-                    "refine_iterations": st.session_state.get("bt_refine_iterations", 0),
-                    "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
-                    "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", True),
-                    "extraction_prompt_file": st.session_state.get("bt_extraction_prompt", "prompts/extraction.md"),
-                    "refinement_prompt_file": st.session_state.get("bt_refinement_prompt", "prompts/refinement.md"),
-                    "dry_run": bt_dry_run,
+                    "vertexai": {
+                        "project_id": st.session_state.get("bt_project_id", vai.project_id),
+                        "location": st.session_state.get("bt_location", vai.location),
+                        "model": st.session_state.get("bt_model_id", vai.model),
+                        "auth_mode": auth_mode,
+                        "refine_iterations": st.session_state.get("bt_refine_iterations", vai.refine_iterations),
+                        "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
+                        "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", vai.diminishing_returns_enabled),
+                        "extraction_prompt": st.session_state.get("bt_extraction_prompt", vai.extraction_prompt),
+                        "refinement_prompt": st.session_state.get("bt_refinement_prompt", vai.refinement_prompt),
+                    },
+                    "processing": {
+                        "chunk_size": chunk_size,
+                        "chunk_overlap": chunk_overlap,
+                    },
+                    "batch": {
+                        "recursive": recursive,
+                        "extensions": selected_extensions,
+                    },
                 }
                 thread = threading.Thread(
                     target=_run_batch_worker,
                     args=(
                         Path(folder_str.strip()),
                         Path(output_str.strip()),
-                        backend_kwargs,
-                        chunk_size,
-                        chunk_overlap,
-                        recursive,
+                        overrides,
+                        bt_dry_run,
                         verbose,
                         result_q,
                         log_q,
                     ),
-                    kwargs={"extensions": selected_extensions},
                     daemon=True,
                 )
             thread.start()

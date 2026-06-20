@@ -5,7 +5,14 @@ from __future__ import annotations
 import streamlit as st
 
 from _common import list_extraction_prompts, list_refinement_prompts
-from src.config import BACKENDS, GEMINI_MODELS, MachineProfile, load_settings, save_settings
+from src.config import (
+    BACKENDS,
+    GEMINI_MODELS,
+    MachineProfile,
+    load_settings,
+    save_all_machines,
+    save_settings,
+)
 
 
 def run() -> None:
@@ -268,19 +275,4 @@ def run() -> None:
 
 def _write_all_machines(cfg) -> None:
     """Save all settings without remapping through active machine logic."""
-    import json
-    from dataclasses import asdict
-    from src.config import _CONFIG_PATH
-
-    data = {
-        "active_machine": cfg.active_machine,
-        "backend": cfg.backend,
-        "machines": [asdict(m) for m in cfg.machines],
-        "processing": asdict(cfg.processing),
-        "batch": asdict(cfg.batch),
-        "logging": asdict(cfg.logging),
-    }
-    _CONFIG_PATH.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    save_all_machines(cfg)
