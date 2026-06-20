@@ -85,7 +85,9 @@ pdf2md/
 │   ├── test_postprocess.py # Markdown cleaning pipeline
 │   ├── test_file_converter.py  # File type detection, image→PDF conversion
 │   ├── test_chunker.py     # PDF splitting and markdown merging
-│   └── test_validation.py  # Quality validation helpers
+│   ├── test_validation.py  # Quality validation helpers
+│   ├── test_corrections_report.py  # Corrections report generation (data → markdown, verdict icons)
+│   └── test_model_backend_consistency.py  # Backend-attribute and model-id contract guard (shared refinement loop)
 ├── tmp/
 │   ├── exec_log.jsonl      # Persistent execution log (append-only)
 │   └── pdf2md_*.log        # Rotating debug log files
