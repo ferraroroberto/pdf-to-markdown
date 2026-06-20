@@ -768,31 +768,29 @@ def run() -> None:
 
             _clear_output()
 
-            # Active backend (from config). The hub backend ignores the Vertex
-            # project/location/auth and uses the stable hub model alias.
-            from src.config import HUB_MODEL
+            # Build the backend kwargs through the shared single source of
+            # truth (src.config.build_backend_kwargs) that the CLI and batch
+            # entry points already use, so the Execute tab cannot drift on the
+            # kwarg set or the default prompt names. The hub backend's "ignore
+            # the Vertex model and use the stable hub alias" rule lives inside
+            # that helper — the UI only assembles the per-run overrides.
+            from src.config import build_backend_kwargs
             _backend_name = cfg.backend
-            _model_id = (
-                HUB_MODEL if _backend_name == "hubgemini"
-                else st.session_state.get("vai_model_id", DEFAULT_MODEL)
-            )
-
-            extra_kwargs: dict = {
-                "project_id": st.session_state.get("vai_project_id", ""),
-                "location": st.session_state.get("vai_location", "europe-west3"),
-                "model_id": _model_id,
-                "auth_mode": auth_mode,
-                "refine_iterations": st.session_state.get("vai_refine_iterations", 0),
-                "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", 0),
-                "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", True),
-                "extraction_prompt_file": st.session_state.get(
-                    "vai_extraction_prompt_file", "prompts/extraction.md"
-                ),
-                "refinement_prompt_file": st.session_state.get(
-                    "vai_refinement_prompt_file", "prompts/refinement.md"
-                ),
-                "dry_run": dry_run_check,
-            }
+            _run_settings = load_settings({
+                "backend": _backend_name,
+                "vertexai": {
+                    "project_id": st.session_state.get("vai_project_id", vai_cfg.project_id),
+                    "location": st.session_state.get("vai_location", vai_cfg.location),
+                    "model": st.session_state.get("vai_model_id", vai_cfg.model),
+                    "auth_mode": auth_mode,
+                    "refine_iterations": st.session_state.get("vai_refine_iterations", vai_cfg.refine_iterations),
+                    "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", vai_cfg.clean_stop_max_errors),
+                    "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", vai_cfg.diminishing_returns_enabled),
+                    "extraction_prompt": st.session_state.get("vai_extraction_prompt_file", vai_cfg.extraction_prompt),
+                    "refinement_prompt": st.session_state.get("vai_refinement_prompt_file", vai_cfg.refinement_prompt),
+                },
+            })
+            extra_kwargs: dict = build_backend_kwargs(_run_settings, dry_run=dry_run_check)
 
             log_q: queue.Queue = queue.Queue()
             result_q: queue.Queue = queue.Queue()

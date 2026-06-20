@@ -241,19 +241,19 @@ def save_settings(settings: Settings) -> None:
         else:
             updated_machines.append(m)
 
-    data = {
-        "active_machine": settings.active_machine,
-        "backend": settings.backend,
-        "machines": [asdict(m) for m in updated_machines],
-        "processing": asdict(settings.processing),
-        "batch": asdict(settings.batch),
-        "logging": asdict(settings.logging),
-    }
-    _CONFIG_PATH.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    logger.info("ℹ️ Settings saved to %s", _CONFIG_PATH)
+    _write_config(updated_machines, settings)
+
+
+def save_all_machines(settings: Settings) -> None:
+    """Serialise *settings* to config.json **without** remapping the active machine.
+
+    Unlike :func:`save_settings`, the machine profiles are written exactly as
+    they appear on ``settings.machines`` — no profile is overwritten from
+    ``settings.vertexai``. The Settings tab edits a specific machine profile in
+    place and must persist that machine verbatim, so it calls this instead of
+    re-implementing the serialiser against the private ``_CONFIG_PATH``.
+    """
+    _write_config(settings.machines, settings)
 
 
 def build_backend_kwargs(
@@ -300,6 +300,29 @@ def build_backend_kwargs(
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────────
+
+
+def _write_config(machines: list[MachineProfile], settings: Settings) -> None:
+    """Single config.json serialiser shared by both public savers.
+
+    Writes *machines* plus the non-machine sections of *settings*. The two
+    public entry points differ only in which machine list they hand in:
+    :func:`save_settings` remaps the active machine from ``settings.vertexai``
+    first; :func:`save_all_machines` passes the profiles through untouched.
+    """
+    data = {
+        "active_machine": settings.active_machine,
+        "backend": settings.backend,
+        "machines": [asdict(m) for m in machines],
+        "processing": asdict(settings.processing),
+        "batch": asdict(settings.batch),
+        "logging": asdict(settings.logging),
+    }
+    _CONFIG_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    logger.info("ℹ️ Settings saved to %s", _CONFIG_PATH)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
