@@ -145,7 +145,7 @@ def _run_single(
 ) -> None:
     import shutil as _shutil
     import tempfile as _tempfile
-    from src.chunker import split_pdf, merge_chunks
+    from src.chunk_runner import ChunkSpec, convert_chunked
     from src.pipeline import Pipeline
     from src.file_converter import needs_conversion
 
@@ -170,35 +170,48 @@ def _run_single(
     try:
         if chunk_size > 0:
             console.print(f"[cyan]Chunking enabled:[/cyan] {chunk_size} pages/chunk, overlap={chunk_overlap}")
-            all_chunks = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
-            total_available = len(all_chunks)
-            console.print(f"  Split into {total_available} chunk(s)")
 
-            if max_chunks > 0 and max_chunks < total_available:
-                console.print(f"  Processing first {max_chunks} of {total_available} chunk(s) (--max-chunks={max_chunks})")
-                chunks = all_chunks[:max_chunks]
-            else:
-                chunks = all_chunks
+            # Processed-chunk count for the "N/M" progress label, captured from
+            # on_split (matches the old ``len(chunks)`` after the max-chunks slice).
+            _processed: list[ChunkSpec] = []
 
-            results = []
-            for chunk_idx, chunk_path, start_page, end_page in chunks:
-                console.print(f"  Processing chunk {chunk_idx + 1}/{len(chunks)} (pages {start_page}–{end_page})…")
-                r = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
-                results.append(r)
+            def _on_split(specs: list[ChunkSpec], total_available: int) -> None:
+                _processed[:] = specs
+                console.print(f"  Split into {total_available} chunk(s)")
+                if max_chunks > 0 and max_chunks < total_available:
+                    console.print(
+                        f"  Processing first {max_chunks} of {total_available} "
+                        f"chunk(s) (--max-chunks={max_chunks})"
+                    )
 
-            merged_md = merge_chunks(
-                [r.markdown for r in results],
-                chunk_overlap=chunk_overlap,
+            def _on_chunk_start(spec: ChunkSpec) -> None:
+                console.print(
+                    f"  Processing chunk {spec.num}/{len(_processed)} "
+                    f"(pages {spec.pages_label})…"
+                )
+
+            outcomes, merged_md = convert_chunked(
+                working_pdf,
+                pipe,
+                backend_kwargs,
+                chunk_size,
+                chunk_overlap,
+                validate_output=validate_output,
+                max_chunks=max_chunks,
+                pages_dash="–",
+                raise_on_chunk_error=True,
+                on_split=_on_split,
+                on_chunk_start=_on_chunk_start,
             )
-            last = results[-1]
+            last = outcomes[-1]
             result = ConversionResult(
                 source=pdf_path,
                 markdown=merged_md,
                 backend_used=last.backend_used,
                 metadata={
                     **last.metadata,
-                    "page_count": sum(r.metadata.get("page_count", 0) for r in results),
-                    "chunks": len(results),
+                    "page_count": sum(o.metadata.get("page_count", 0) for o in outcomes),
+                    "chunks": len(outcomes),
                 },
             )
         else:

@@ -2,6 +2,7 @@
 
 from src.auth import build_client
 from src.batch import run_batch
+from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
 from src.chunker import cleanup_chunks, merge_chunks, split_pdf
 from src.classifier import PDFInfo, classify_pdf
 from src.config import Settings, load_settings, save_settings
@@ -24,6 +25,9 @@ __all__ = [
     "split_pdf",
     "merge_chunks",
     "cleanup_chunks",
+    "convert_chunked",
+    "ChunkSpec",
+    "ChunkOutcome",
     "run_batch",
     "append_row",
     "load_log",

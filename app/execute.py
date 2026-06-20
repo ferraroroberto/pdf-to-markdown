@@ -223,118 +223,120 @@ def _run_conversion(
             pricing_data = load_pricing()
 
             if chunk_size > 0:
-                from src.chunker import merge_chunks, split_pdf
+                from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
 
                 # Chunks are written directly to output_dir with consistent naming
                 # ({stem}.chunk_NNN.pdf) so they persist for resume and inspection.
-                all_chunk_list = split_pdf(
-                    working_pdf,
-                    chunk_size=chunk_size,
-                    overlap=chunk_overlap,
-                    output_dir=output_dir,
-                    file_stem=output_stem,
-                )
-                total_available = len(all_chunk_list)
-
-                if max_chunks > 0 and max_chunks < total_available:
-                    root.info(
-                        "ℹ️ Processing first %d of %d chunk(s) (max_chunks=%d)",
-                        max_chunks, total_available, max_chunks,
-                    )
-                    chunks = all_chunk_list[:max_chunks]
-                else:
-                    chunks = all_chunk_list
-
-                # Detect already-completed chunks from a prior (interrupted) run.
-                resumable: set[int] = {
-                    chunk_idx
-                    for chunk_idx, _, _, _ in chunks
-                    if (
-                        (output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md").exists()
-                        and (output_dir / f"{output_stem}.chunk_{chunk_idx + 1:03d}.md").stat().st_size > 0
-                    )
-                }
-                if resumable:
-                    root.info(
-                        "ℹ️ Resume detected: %d/%d chunk(s) already complete — "
-                        "skipping those and continuing from chunk %d.",
-                        len(resumable), len(chunks),
-                        min(set(range(len(chunks))) - resumable, default=len(chunks)) + 1,
-                    )
-
-                chunk_markdowns: list[str] = []
+                processed: list[ChunkSpec] = []
                 chunk_metas: list[tuple[int, str, dict]] = []
 
-                for chunk_idx, chunk_path, start_page, end_page in chunks:
-                    chunk_num = chunk_idx + 1
-                    pages_label = f"{start_page}-{end_page}"
-                    chunk_md_path = output_dir / f"{output_stem}.chunk_{chunk_num:03d}.md"
+                def _chunk_md_path(spec: ChunkSpec) -> Path:
+                    return output_dir / f"{output_stem}.chunk_{spec.num:03d}.md"
 
-                    # --- Resume: load existing markdown, skip API call ---
-                    if chunk_idx in resumable:
-                        existing_md = chunk_md_path.read_text(encoding="utf-8")
+                def _is_resumable(spec: ChunkSpec) -> bool:
+                    p = _chunk_md_path(spec)
+                    return p.exists() and p.stat().st_size > 0
+
+                def _on_split(specs: list[ChunkSpec], total_available: int) -> None:
+                    processed[:] = specs
+                    if max_chunks > 0 and max_chunks < total_available:
                         root.info(
-                            "ℹ️ Chunk %d/%d — pages %s — ✅ resuming from saved file",
-                            chunk_num, len(chunks), pages_label,
+                            "ℹ️ Processing first %d of %d chunk(s) (max_chunks=%d)",
+                            max_chunks, total_available, max_chunks,
                         )
-                        chunk_markdowns.append(existing_md)
-                        chunk_metas.append((chunk_idx, pages_label, {}))
-                        continue
+                    # Detect already-completed chunks from a prior (interrupted) run.
+                    resumable = {s.idx for s in specs if _is_resumable(s)}
+                    if resumable:
+                        root.info(
+                            "ℹ️ Resume detected: %d/%d chunk(s) already complete — "
+                            "skipping those and continuing from chunk %d.",
+                            len(resumable), len(specs),
+                            min(set(range(len(specs))) - resumable, default=len(specs)) + 1,
+                        )
 
+                def _resume_lookup(spec: ChunkSpec) -> str | None:
+                    if not _is_resumable(spec):
+                        return None
+                    existing_md = _chunk_md_path(spec).read_text(encoding="utf-8")
+                    root.info(
+                        "ℹ️ Chunk %d/%d — pages %s — ✅ resuming from saved file",
+                        spec.num, len(processed), spec.pages_label,
+                    )
+                    return existing_md
+
+                def _on_chunk_start(spec: ChunkSpec) -> None:
                     root.info(
                         "ℹ️ Chunk %d/%d — pages %s",
-                        chunk_num, len(chunks), pages_label,
+                        spec.num, len(processed), spec.pages_label,
                     )
 
-                    chunk_kwargs = dict(kwargs)
-                    if backend in _GEMINI_STYLE_BACKENDS:
-                        chunk_stem = f"{output_stem}.chunk_{chunk_num:03d}"
-                        if verbose:
-                            chunk_kwargs["verbose_save_dir"] = output_dir
-                            chunk_kwargs["verbose_file_stem"] = chunk_stem
+                def _chunk_kwargs(spec: ChunkSpec) -> dict:
+                    if backend in _GEMINI_STYLE_BACKENDS and verbose:
+                        return {
+                            "verbose_save_dir": output_dir,
+                            "verbose_file_stem": f"{output_stem}.chunk_{spec.num:03d}",
+                        }
+                    return {}
 
-                    try:
-                        r = pipe.convert(chunk_path, validate_output=False, **chunk_kwargs)
-                        chunk_markdowns.append(r.markdown)
-                        chunk_metas.append((chunk_idx, pages_label, r.metadata))
+                def _failed_markdown(spec: ChunkSpec, exc: Exception) -> str:
+                    return (
+                        f"\n\n> ⚠️ Chunk {spec.num} (pages {spec.start_page}–{spec.end_page}) "
+                        f"failed: {exc}\n\n"
+                    )
 
-                        # Always save chunk markdown immediately — enables resume
-                        chunk_md_path.write_text(r.markdown, encoding="utf-8")
-                        root.debug("Saved chunk %d markdown → %s", chunk_num, chunk_md_path.name)
+                def _on_chunk(outcome: ChunkOutcome) -> None:
+                    spec = outcome.spec
+                    if outcome.error:
+                        root.warning("⚠️ Chunk %d failed: %s — skipping", spec.idx, outcome.error)
+                        return
+                    if not outcome.resumed:
+                        # Persist markdown + corrections + exec log immediately.
+                        # Resumed chunks already have these on disk, so skip.
+                        md_path = _chunk_md_path(spec)
+                        md_path.write_text(outcome.markdown, encoding="utf-8")
+                        root.debug("Saved chunk %d markdown → %s", spec.num, md_path.name)
 
-                        # Always save per-chunk corrections log immediately
                         corr = save_chunk_corrections_report(
-                            r.metadata, output_dir, output_stem, chunk_num, pages_label,
+                            outcome.metadata, output_dir, output_stem, spec.num, spec.pages_label,
                         )
                         if corr:
-                            root.debug("Saved chunk %d corrections → %s", chunk_num, corr.name)
+                            root.debug("Saved chunk %d corrections → %s", spec.num, corr.name)
 
-                        _log_conversion_steps(str(pdf_path), chunk_idx, pages_label, r, pricing_data)
-                    except Exception as exc:  # noqa: BLE001
-                        root.warning("⚠️ Chunk %d failed: %s — skipping", chunk_idx, exc)
-                        chunk_markdowns.append(
-                            f"\n\n> ⚠️ Chunk {chunk_num} (pages {start_page}–{end_page}) failed: {exc}\n\n"
+                        _log_conversion_steps(
+                            str(pdf_path), spec.idx, spec.pages_label, outcome.metadata, pricing_data,
                         )
+                    chunk_metas.append((spec.idx, spec.pages_label, outcome.metadata))
 
-                # Merge chunks with robust error handling
-                try:
-                    merged = merge_chunks(chunk_markdowns, chunk_overlap=chunk_overlap)
-                except Exception as exc:  # noqa: BLE001
-                    root.error(
-                        "❌ merge_chunks failed (%s) — falling back to plain join", exc,
-                    )
-                    merged = "\n\n---\n\n".join(m for m in chunk_markdowns if m and m.strip())
+                outcomes, merged = convert_chunked(
+                    working_pdf,
+                    pipe,
+                    kwargs,
+                    chunk_size,
+                    chunk_overlap,
+                    validate_output=False,
+                    max_chunks=max_chunks,
+                    output_dir=output_dir,
+                    file_stem=output_stem,
+                    pages_dash="-",
+                    failed_markdown=_failed_markdown,
+                    resume_lookup=_resume_lookup,
+                    chunk_kwargs=_chunk_kwargs,
+                    on_split=_on_split,
+                    on_chunk_start=_on_chunk_start,
+                    on_chunk=_on_chunk,
+                    merge_fallback=True,
+                )
 
                 if backend in _GEMINI_STYLE_BACKENDS and chunk_metas:
                     combined_meta = {
                         **aggregate_chunked_vertex_metadata(chunk_metas),
-                        "chunks": len(chunks),
+                        "chunks": len(outcomes),
                         "chunk_size": chunk_size,
                     }
                 else:
                     combined_meta = {
                         **(chunk_metas[-1][2] if chunk_metas else {}),
-                        "chunks": len(chunks),
+                        "chunks": len(outcomes),
                         "chunk_size": chunk_size,
                     }
                 result = ConversionResult(
@@ -362,7 +364,7 @@ def _run_conversion(
                     result.metadata["refinement_track_table"] = build_refinement_track_table(
                         result.metadata, 1, "all",
                     )
-                _log_conversion_steps(str(pdf_path), 0, "all", result, pricing_data)
+                _log_conversion_steps(str(pdf_path), 0, "all", result.metadata, pricing_data)
 
         finally:
             if _tmp_conv_dir is not None:
@@ -384,11 +386,10 @@ def _log_conversion_steps(
     file: str,
     chunk_idx: int,
     chunk_pages: str,
-    result: ConversionResult,
+    meta: dict,
     pricing_data: dict,
 ) -> None:
-    """Write exec-log rows for *result* via the shared logger_exec helper."""
-    meta = result.metadata
+    """Write exec-log rows for conversion *meta* via the shared logger_exec helper."""
     log_conversion_steps(
         file=file,
         chunk_idx=chunk_idx,

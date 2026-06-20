@@ -312,6 +312,7 @@ def _process_chunked(
     import shutil as _shutil
     import tempfile as _tempfile
 
+    from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
     from src.file_converter import needs_conversion as _needs_conv
     from src.vertexai_pricing import calculate_cost
 
@@ -337,31 +338,22 @@ def _process_chunked(
                     metadata={}, error=str(exc),
                 )]
 
-        try:
-            chunks = split_pdf(working_pdf, chunk_size=chunk_size, overlap=chunk_overlap)
-        except Exception as exc:
-            logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
-            return [ChunkResult(
-                source=pdf_path, chunk_idx=0, chunk_pages="all",
-                markdown="", backend_used=settings.backend,
-                metadata={}, error=str(exc),
-            )]
-
         chunk_results: list[ChunkResult] = []
+        _processed: list[ChunkSpec] = []
 
-        for chunk_idx, chunk_path, start_page, end_page in chunks:
-            pages_label = f"{start_page}–{end_page}"
-            progress(f"  Chunk {chunk_idx + 1}/{len(chunks)} (pages {pages_label})")
+        def _on_split(specs: list[ChunkSpec], total_available: int) -> None:
+            _processed[:] = specs
 
-            try:
-                result = pipe.convert(chunk_path, validate_output=validate_output, **backend_kwargs)
-                error_msg = None
-            except Exception as exc:
-                logger.warning("⚠️ Chunk %d of %s failed: %s — skipping", chunk_idx, pdf_path.name, exc)
-                error_msg = str(exc)
-                result = None
+        def _on_chunk_start(spec: ChunkSpec) -> None:
+            progress(f"  Chunk {spec.num}/{len(_processed)} (pages {spec.pages_label})")
 
-            meta = result.metadata if result else {}
+        def _on_chunk(outcome: ChunkOutcome) -> None:
+            if outcome.error:
+                logger.warning(
+                    "⚠️ Chunk %d of %s failed: %s — skipping",
+                    outcome.spec.idx, pdf_path.name, outcome.error,
+                )
+            meta = outcome.metadata
             total_in = meta.get("total_input_tokens", 0)
             total_out = meta.get("total_output_tokens", 0)
             cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
@@ -370,10 +362,10 @@ def _process_chunked(
 
             cr = ChunkResult(
                 source=pdf_path,
-                chunk_idx=chunk_idx,
-                chunk_pages=pages_label,
-                markdown=result.markdown if result else "",
-                backend_used=result.backend_used if result else settings.backend,
+                chunk_idx=outcome.spec.idx,
+                chunk_pages=outcome.spec.pages_label,
+                markdown=outcome.markdown,
+                backend_used=outcome.backend_used if not outcome.error else settings.backend,
                 metadata=meta,
                 iteration=meta.get("iterations_completed", 0),
                 errors=last_row.get("errors_found", 0),
@@ -382,21 +374,37 @@ def _process_chunked(
                 minor=last_row.get("minor", 0),
                 verdict=meta.get("final_verdict", "N/A"),
                 cost_label=cost_label,
-                error=error_msg,
+                error=outcome.error,
             )
             chunk_results.append(cr)
             _log_steps(pdf_path, cr, meta, settings, pricing_data)
 
-        # Save merged output
-        if output_dir and chunk_results:
-            merged = merge_chunks(
-                [cr.markdown for cr in chunk_results if not cr.error],
-                chunk_overlap=chunk_overlap,
+        try:
+            _, merged = convert_chunked(
+                working_pdf,
+                pipe,
+                backend_kwargs,
+                chunk_size,
+                chunk_overlap,
+                validate_output=validate_output,
+                pages_dash="–",
+                on_split=_on_split,
+                on_chunk_start=_on_chunk_start,
+                on_chunk=_on_chunk,
             )
-            if merged:
-                out_path = output_dir / (pdf_path.stem + ".md")
-                out_path.write_text(merged, encoding="utf-8")
-                progress(f"  Merged → {out_path.name}")
+        except Exception as exc:
+            logger.error("❌ Failed to split %s: %s", pdf_path.name, exc)
+            return [ChunkResult(
+                source=pdf_path, chunk_idx=0, chunk_pages="all",
+                markdown="", backend_used=settings.backend,
+                metadata={}, error=str(exc),
+            )]
+
+        # Save merged output
+        if output_dir and chunk_results and merged:
+            out_path = output_dir / (pdf_path.stem + ".md")
+            out_path.write_text(merged, encoding="utf-8")
+            progress(f"  Merged → {out_path.name}")
 
         try:
             cleanup_chunks(working_pdf)
