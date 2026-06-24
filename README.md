@@ -41,8 +41,9 @@ pdf2md/
 ├── .venv/                  # Virtual environment (not committed)
 ├── app/
 │   ├── app.py              # Streamlit entry point (5 tabs, sidebar machine selector)
-│   ├── _common.py          # Shared UI helpers (TeeStream, QueueHandler, prompt listing, log-box, config-sync)
-│   ├── execute.py          # Convert File tab (resume, per-chunk corrections)
+│   ├── _common.py          # Shared UI helpers (prompt listing, log-box, config-sync; re-exports TeeStream/QueueHandler)
+│   ├── execute.py          # Convert File tab — thin UI wiring (widgets, session state, worker handoff)
+│   ├── execute_render.py   # Convert File tab — result rendering (summary, artifacts list, usage, previews)
 │   ├── tab_batch.py        # Batch Convert tab
 │   ├── tab_log.py          # History tab
 │   ├── tab_settings.py     # Settings tab (machine profiles + full config.json editor)
@@ -62,6 +63,8 @@ pdf2md/
 │   ├── chunker.py          # PDF page splitter and markdown merger
 │   ├── classifier.py       # Born-digital vs scanned detection
 │   ├── cli.py              # CLI entry point (Click + Rich)
+│   ├── execute_worker.py   # Convert File tab worker — threaded conversion + chunk/resume orchestration + artifact bookkeeping (no Streamlit)
+│   ├── log_streaming.py    # TeeStream / QueueHandler — tee worker stdout+logs into a queue (no Streamlit)
 │   ├── config.json         # Runtime configuration (machines + all settings)
 │   ├── config.py           # Settings / MachineProfile dataclass loader / saver
 │   ├── file_converter.py   # Pre-conversion: Office/image → PDF
