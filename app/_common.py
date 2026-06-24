@@ -16,9 +16,6 @@ both need so the two tabs cannot drift apart again:
 from __future__ import annotations
 
 import html as _html
-import io
-import logging
-import queue
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -26,65 +23,13 @@ import streamlit as st
 
 from src.config import load_settings
 
+# TeeStream / QueueHandler now live in src.log_streaming (no Streamlit
+# dependency) so the non-UI conversion worker can share them.  Re-exported here
+# so the UI tabs keep importing them from _common.
+from src.log_streaming import QueueHandler, TeeStream  # noqa: F401
+
 _PROJECT_ROOT = Path(__file__).parent.parent
 _CONFIG_PATH = _PROJECT_ROOT / "src" / "config.json"
-
-
-# ── Stream tee + queue logging ───────────────────────────────────────────────
-
-
-class TeeStream(io.TextIOBase):
-    """Tee a text stream into a queue, line by line, while passing it through."""
-
-    def __init__(self, log_queue: queue.Queue, original: io.TextIOBase) -> None:
-        self._q = log_queue
-        self._orig = original
-        self._buf = ""
-
-    def write(self, s: str) -> int:
-        try:
-            self._orig.write(s)
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        self._buf += s
-        *lines, self._buf = self._buf.split("\n")
-        for line in lines:
-            clean = line.rstrip("\r").strip()
-            if clean:
-                self._q.put(clean)
-        return len(s)
-
-    def flush(self) -> None:
-        try:
-            self._orig.flush()
-        except Exception:  # noqa: BLE001
-            pass
-        if self._buf.strip():
-            self._q.put(self._buf.rstrip("\r").strip())
-            self._buf = ""
-
-    def isatty(self) -> bool:
-        return False
-
-    @property
-    def encoding(self) -> str:
-        return getattr(self._orig, "encoding", "utf-8") or "utf-8"
-
-    @property
-    def errors(self) -> str:
-        return getattr(self._orig, "errors", "replace") or "replace"
-
-
-class QueueHandler(logging.Handler):
-    """A :class:`logging.Handler` that pushes formatted records onto a queue."""
-
-    def __init__(self, log_queue: queue.Queue) -> None:
-        super().__init__()
-        self._q = log_queue
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self._q.put(self.format(record))
 
 
 # ── Prompt discovery ─────────────────────────────────────────────────────────
