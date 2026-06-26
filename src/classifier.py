@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import fitz  # PyMuPDF
+from src._pymupdf import fitz  # PyMuPDF — forward-compat shim (pymupdf >= 1.24, fitz fallback)
 
 
 @dataclass

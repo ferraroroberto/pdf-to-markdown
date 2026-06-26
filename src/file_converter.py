@@ -178,7 +178,7 @@ def _office_to_pdf_docling(source: Path, output_dir: Path) -> Path:
             "Install it with: pip install docling"
         )
 
-    import fitz  # pymupdf
+    from src._pymupdf import fitz  # forward-compat shim (pymupdf >= 1.24, fitz fallback)
 
     PAGE_W, PAGE_H = 595, 842  # A4
     MARGIN = 50
@@ -297,7 +297,7 @@ def _powerpoint_to_pdf(com, source: str, pdf_path: str) -> None:
 
 def _image_to_pdf(source: Path, output_dir: Path) -> Path:
     """Embed an image in a single-page PDF using PyMuPDF."""
-    import fitz  # pymupdf — always available as a project dependency
+    from src._pymupdf import fitz  # forward-compat shim (pymupdf >= 1.24, fitz fallback)
 
     logger.info("ℹ️ Converting image %s to PDF via PyMuPDF…", source.name)
 

@@ -620,7 +620,13 @@ def run() -> None:
             # Summary
             total_in = sum(r.metadata.get("total_input_tokens", 0) for r in results)
             total_out = sum(r.metadata.get("total_output_tokens", 0) for r in results)
-            total_tok = total_in + total_out
+            # Honour per-result ``total_tokens`` when present (Vertex's total_token_count
+            # can exceed input + output when thinking tokens are billed); fall back to
+            # in + out per result, matching the _usage_triplet logic in src/refinement.py.
+            total_tok = sum(
+                r.metadata.get("total_tokens") or (r.metadata.get("total_input_tokens", 0) + r.metadata.get("total_output_tokens", 0))
+                for r in results
+            )
             files = {r.source for r in results}
             failed = sum(1 for r in results if r.failed)
             models_used = {r.metadata.get("model", "") for r in results if r.metadata.get("model")}
