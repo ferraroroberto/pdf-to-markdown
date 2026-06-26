@@ -60,6 +60,7 @@ pdf2md/
 ├── src/
 │   ├── auth.py             # Authentication factory (api | gcloud)
 │   ├── batch.py            # Folder discovery and batch orchestrator
+│   ├── chunk_runner.py     # Shared chunk-conversion orchestration (split → per-chunk convert → merge) used by Execute, Batch, and CLI
 │   ├── chunker.py          # PDF page splitter and markdown merger
 │   ├── classifier.py       # Born-digital vs scanned detection
 │   ├── cli.py              # CLI entry point (Click + Rich)
@@ -90,6 +91,7 @@ pdf2md/
 │   ├── test_chunker.py     # PDF splitting and markdown merging
 │   ├── test_validation.py  # Quality validation helpers
 │   ├── test_corrections_report.py  # Corrections report generation (data → markdown, verdict icons)
+│   ├── test_chunk_runner.py  # Shared chunk-conversion orchestration (split + max_chunks slice, resume, error policy, on_chunk hooks)
 │   └── test_model_backend_consistency.py  # Backend-attribute and model-id contract guard (shared refinement loop)
 ├── tmp/
 │   ├── exec_log.jsonl      # Persistent execution log (append-only)
