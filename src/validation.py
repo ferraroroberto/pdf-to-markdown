@@ -6,7 +6,7 @@ import difflib
 import re
 from pathlib import Path
 
-import fitz  # PyMuPDF
+from src._pymupdf import fitz  # PyMuPDF — forward-compat shim (pymupdf >= 1.24, fitz fallback)
 
 from src.models import ValidationReport
 

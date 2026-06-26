@@ -78,15 +78,7 @@ def split_pdf(
         ``start_page`` and ``end_page`` are 0-based, inclusive of overlap.
         ``chunk_idx`` is 0-based.
     """
-    try:
-        import pymupdf as fitz  # type: ignore[import]
-    except ImportError:
-        try:
-            import fitz  # type: ignore[import]
-        except ImportError as exc:
-            raise ImportError(
-                "PyMuPDF is required for chunking. Run: pip install pymupdf"
-            ) from exc
+    from src._pymupdf import fitz  # forward-compat shim (pymupdf >= 1.24, fitz fallback)
 
     logger.debug("split_pdf() — path=%s, chunk_size=%d, overlap=%d", pdf_path, chunk_size, overlap)
 
