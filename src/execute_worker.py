@@ -21,8 +21,9 @@ import queue
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
-from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
+from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked, pre_convert_to_pdf
 from src.corrections_report import (
     aggregate_chunked_vertex_metadata,
     build_refinement_track_table,
@@ -201,9 +202,6 @@ def run_execute_conversion(
     :class:`ExecutionArtifacts` listing every file written.  On failure puts
     ``("error", message)``.
     """
-    import shutil as _shutil
-    import tempfile as _tempfile
-
     orig_stdout, orig_stderr = sys.stdout, sys.stderr
     sys.stdout = TeeStream(log_queue, orig_stdout)
     sys.stderr = TeeStream(log_queue, orig_stderr)
@@ -255,22 +253,20 @@ def run_execute_conversion(
         # For non-PDF files: convert to PDF upfront when chunking is requested
         # or verbose mode is on (so the converted PDF is saved for inspection).
         # Otherwise the pipeline handles conversion internally via ensure_pdf().
-        _tmp_conv_dir: Path | None = None
+        _cleanup: Callable[[], None] | None = None
         working_pdf = pdf_path
 
         if needs_conv and (chunk_size > 0 or verbose):
-            from src.file_converter import convert_to_pdf
             if verbose:
                 # Save converted PDF permanently next to the source file
-                working_pdf = convert_to_pdf(pdf_path, output_dir)
+                working_pdf, _cleanup = pre_convert_to_pdf(pdf_path, persist_to=output_dir)
                 root.info(
                     "ℹ️ Converted %s → %s (saved for inspection)",
                     pdf_path.name, working_pdf.name,
                 )
             else:
                 # Temporary directory — cleaned up in finally block
-                _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
-                working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+                working_pdf, _cleanup = pre_convert_to_pdf(pdf_path)
 
         try:
             from src.vertexai_pricing import load_pricing
@@ -468,8 +464,8 @@ def run_execute_conversion(
                             artifacts.raw_responses.append(raw_path)
 
         finally:
-            if _tmp_conv_dir is not None:
-                _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
+            if _cleanup is not None:
+                _cleanup()
 
         # ── Persist final document + post-run artifacts ──────────────────────
         result.save(output_path)

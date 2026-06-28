@@ -309,10 +309,12 @@ def _process_chunked(
     pricing_data: dict,
     progress,
 ) -> list[ChunkResult]:
-    import shutil as _shutil
-    import tempfile as _tempfile
-
-    from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
+    from src.chunk_runner import (
+        ChunkOutcome,
+        ChunkSpec,
+        convert_chunked,
+        pre_convert_to_pdf,
+    )
     from src.file_converter import needs_conversion as _needs_conv
     from src.vertexai_pricing import calculate_cost
 
@@ -321,14 +323,12 @@ def _process_chunked(
     # app/execute.py:_run_conversion both convert-then-chunk) — rather than
     # degrading the Batch tab to a single whole-file call, which can blow past
     # model limits for a large Word/PowerPoint.
-    _tmp_conv_dir: Path | None = None
+    _cleanup: Callable[[], None] | None = None
     working_pdf = pdf_path
     try:
         if _needs_conv(pdf_path):
-            from src.file_converter import convert_to_pdf
             try:
-                _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
-                working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+                working_pdf, _cleanup = pre_convert_to_pdf(pdf_path)
                 progress(f"  Converted {pdf_path.name} → {working_pdf.name} (temporary)")
             except Exception as exc:
                 logger.error("❌ Failed to convert %s to PDF: %s", pdf_path.name, exc)
@@ -413,8 +413,8 @@ def _process_chunked(
 
         return chunk_results
     finally:
-        if _tmp_conv_dir is not None:
-            _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
+        if _cleanup is not None:
+            _cleanup()
 
 
 def _log_steps(
