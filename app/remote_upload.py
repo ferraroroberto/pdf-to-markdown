@@ -11,7 +11,6 @@ This module provides:
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import streamlit as st
@@ -84,14 +83,3 @@ def save_uploaded_files(uploaded_files: list) -> Path:
         with open(dest, "wb") as f:
             f.write(uf.getbuffer())
     return batch_dir
-
-
-def cleanup_upload(path: Path) -> None:
-    """Remove an uploaded file or batch folder (best-effort)."""
-    try:
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        elif path.is_file():
-            path.unlink(missing_ok=True)
-    except OSError:
-        pass

@@ -31,7 +31,6 @@ API call timing is logged at **INFO** level (visible on both streams) using
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
