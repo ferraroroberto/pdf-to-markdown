@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from src.chunker import cleanup_chunks, merge_chunks, split_pdf
+from src.chunker import cleanup_chunks
 from src.config import Settings, build_backend_kwargs
 from src.logger_exec import log_conversion_steps
 from src.models import ChunkResult, ConversionResult
