@@ -26,6 +26,8 @@ driver keeps its exact observable behavior:
 from __future__ import annotations
 
 import logging
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -39,6 +41,55 @@ logger = logging.getLogger("chunk_runner")
 
 # Plain-join separator used only when merge_chunks() itself raises.
 _PLAIN_JOIN_SEPARATOR = "\n\n---\n\n"
+
+
+def _noop() -> None:
+    """No-op cleanup, returned when there is nothing to remove (persist case)."""
+
+
+def pre_convert_to_pdf(
+    source: Path,
+    *,
+    persist_to: Optional[Path] = None,
+) -> tuple[Path, Callable[[], None]]:
+    """Pre-convert a non-PDF *source* to PDF; return ``(working_pdf, cleanup)``.
+
+    This is the pre-conversion mechanic shared by the three single-file
+    conversion drivers (``cli._run_single``, ``batch._process_chunked``,
+    ``execute_worker.run_execute_conversion``).  Each driver keeps its own
+    *trigger condition* for when a pre-conversion is needed and its own
+    progress/log side-effects; only the tmp-dir creation, the ``convert_to_pdf``
+    call, and the cleanup live here.
+
+    Parameters
+    ----------
+    source:
+        Non-PDF input file to convert.
+    persist_to:
+        When given (Execute verbose mode), the converted PDF is written to this
+        directory and kept for inspection — the returned cleanup is a no-op.
+        When ``None``, the conversion runs in a private ``pdf2md_conv_*`` temp
+        dir and the returned cleanup removes it.
+
+    Returns
+    -------
+    ``(working_pdf, cleanup)`` — the converted PDF path and a callable the caller
+    must invoke (typically from a ``finally``) to release the temp dir.  If the
+    conversion itself raises, the temp dir is removed before the exception
+    propagates, so the caller never leaks it.
+    """
+    from src.file_converter import convert_to_pdf
+
+    if persist_to is not None:
+        return convert_to_pdf(source, persist_to), _noop
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="pdf2md_conv_"))
+    try:
+        working_pdf = convert_to_pdf(source, tmp_dir)
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    return working_pdf, lambda: shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @dataclass

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Callable
 
 import click
 from rich.console import Console
@@ -143,9 +144,7 @@ def _run_single(
     dry_run: bool,
     max_chunks: int = 0,
 ) -> None:
-    import shutil as _shutil
-    import tempfile as _tempfile
-    from src.chunk_runner import ChunkSpec, convert_chunked
+    from src.chunk_runner import ChunkSpec, convert_chunked, pre_convert_to_pdf
     from src.pipeline import Pipeline
     from src.file_converter import needs_conversion
 
@@ -157,14 +156,12 @@ def _run_single(
     pipe = Pipeline(backend=backend_name)
 
     needs_conv = needs_conversion(pdf_path)
-    _tmp_conv_dir: Path | None = None
     working_pdf = pdf_path
+    _cleanup: Callable[[], None] | None = None
 
     # Convert non-PDF to PDF upfront when chunking is requested
     if needs_conv and chunk_size > 0:
-        from src.file_converter import convert_to_pdf
-        _tmp_conv_dir = Path(_tempfile.mkdtemp(prefix="pdf2md_conv_"))
-        working_pdf = convert_to_pdf(pdf_path, _tmp_conv_dir)
+        working_pdf, _cleanup = pre_convert_to_pdf(pdf_path)
         console.print(f"[cyan]Converted[/cyan] {pdf_path.name} → {working_pdf.name} (temporary)")
 
     try:
@@ -227,8 +224,8 @@ def _run_single(
             else:
                 result = r
     finally:
-        if _tmp_conv_dir is not None:
-            _shutil.rmtree(_tmp_conv_dir, ignore_errors=True)
+        if _cleanup is not None:
+            _cleanup()
 
     out = _resolve_output(pdf_path, output_path)
     if out:

@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from src.chunk_runner import ChunkOutcome, ChunkSpec, convert_chunked
+import src.file_converter as _file_converter
+from src.chunk_runner import (
+    ChunkOutcome,
+    ChunkSpec,
+    convert_chunked,
+    pre_convert_to_pdf,
+)
 from src.models import ConversionResult
 
 
@@ -255,3 +261,71 @@ def test_hook_order(minimal_pdf):
     )
     # Single chunk (5 pages, chunk_size 5): split, then start, then done
     assert events == ["split", "start", "done"]
+
+
+# ---------------------------------------------------------------------------
+# pre_convert_to_pdf — shared pre-conversion mechanic (tmp-dir / persist / cleanup)
+# ---------------------------------------------------------------------------
+
+
+class TestPreConvertToPdf:
+    """The mechanic the three single-file drivers share; triggers/side-effects
+    stay caller-side, only tmp-dir + convert + cleanup live in the helper."""
+
+    @staticmethod
+    def _patch_convert(monkeypatch) -> list[Path]:
+        """Replace convert_to_pdf with a fake that records the dest dir it got
+        and writes a stub PDF there; returns the recorded-dest list."""
+        seen: list[Path] = []
+
+        def fake_convert_to_pdf(source: Path, dest_dir: Path) -> Path:
+            seen.append(Path(dest_dir))
+            out = Path(dest_dir) / (Path(source).stem + ".pdf")
+            out.write_bytes(b"%PDF-1.4 fake")
+            return out
+
+        monkeypatch.setattr(_file_converter, "convert_to_pdf", fake_convert_to_pdf)
+        return seen
+
+    def test_tempdir_created_then_cleaned(self, monkeypatch, tmp_path):
+        seen = self._patch_convert(monkeypatch)
+        src = tmp_path / "doc.docx"
+        src.write_bytes(b"x")
+
+        working, cleanup = pre_convert_to_pdf(src)
+
+        tmp_dir = seen[0]
+        assert tmp_dir.name.startswith("pdf2md_conv_")
+        assert working.exists() and working.parent == tmp_dir
+        cleanup()
+        assert not tmp_dir.exists()
+
+    def test_persist_writes_to_dir_with_noop_cleanup(self, monkeypatch, tmp_path):
+        seen = self._patch_convert(monkeypatch)
+        src = tmp_path / "slides.pptx"
+        src.write_bytes(b"x")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        working, cleanup = pre_convert_to_pdf(src, persist_to=out_dir)
+
+        assert seen == [out_dir]          # no temp dir — converted straight into out_dir
+        assert working.parent == out_dir and working.exists()
+        cleanup()                         # no-op for the persist case
+        assert working.exists()           # kept for inspection, not removed
+
+    def test_tempdir_removed_when_convert_raises(self, monkeypatch, tmp_path):
+        created: list[Path] = []
+
+        def boom(source: Path, dest_dir: Path) -> Path:
+            created.append(Path(dest_dir))
+            raise RuntimeError("convert failed")
+
+        monkeypatch.setattr(_file_converter, "convert_to_pdf", boom)
+        src = tmp_path / "doc.docx"
+        src.write_bytes(b"x")
+
+        with pytest.raises(RuntimeError, match="convert failed"):
+            pre_convert_to_pdf(src)
+
+        assert created and not created[0].exists()   # temp dir cleaned up on error
