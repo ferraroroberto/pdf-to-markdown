@@ -188,6 +188,17 @@ class TestSplitPdfFunctional:
         chunks_dir = minimal_pdf.parent / f"_chunks_{minimal_pdf.stem}"
         assert chunks_dir.exists()
 
+    def test_flat_layout_overwrites_stale_chunk_pdf(self, minimal_pdf, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+        stale_chunk = out / "doc.chunk_001.pdf"
+        stale_chunk.write_bytes(b"stale chunk pdf")
+
+        chunks = split_pdf(minimal_pdf, chunk_size=3, output_dir=out, file_stem="doc")
+
+        assert chunks[0][1] == stale_chunk
+        assert stale_chunk.read_bytes() != b"stale chunk pdf"
+
 
 # ---------------------------------------------------------------------------
 # cleanup_chunks

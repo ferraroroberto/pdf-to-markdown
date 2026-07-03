@@ -114,7 +114,12 @@ class Pipeline:
             t0 = time.time()
             markdown, metadata = backend.convert(work_pdf, **backend_kwargs)
             logger.debug("Extraction took %.3fs, output=%d chars", time.time() - t0, len(markdown))
-            if "page_count" not in metadata or metadata["page_count"] is None:
+            page_count = metadata.get("page_count")
+            try:
+                page_count_value = int(page_count) if page_count is not None else None
+            except (TypeError, ValueError):
+                page_count_value = None
+            if page_count_value is None or page_count_value <= 0:
                 metadata["page_count"] = pdf_info.page_count
 
             # Post-process

@@ -89,17 +89,18 @@ def erase_prior_execution_artifacts(
     *protect_resolved* are skipped (typically the current source PDF).
 
     When *preserve_chunk_files* is ``True`` (the default), files matching
-    ``{stem}.chunk_*.pdf``, ``{stem}.chunk_*.md``, and
-    ``{stem}.chunk_*.corrections.md`` are **kept** so a subsequent run can
-    resume from where the previous one left off.  Set to ``False`` to force a
-    full clean restart (e.g. when the user explicitly requests it).
+    ``{stem}.chunk_*.md`` and ``{stem}.chunk_*.corrections.md`` are **kept** so
+    a subsequent run can resume from where the previous one left off.  Prior
+    chunk PDFs are always removed because the splitter regenerates them before
+    resume lookup runs.  Set to ``False`` to force a full clean restart (e.g.
+    when the user explicitly requests it).
     """
     import shutil as _shutil
 
     protect = protect_resolved or frozenset()
 
     # Patterns that belong to resumable chunk artifacts (flat-layout naming)
-    _CHUNK_SUFFIXES = (".pdf", ".md", ".corrections.md")
+    _CHUNK_SUFFIXES = (".corrections.md", ".md")
 
     def _is_chunk_artifact(p: Path) -> bool:
         """Return True if *p* is a resumable chunk file (e.g. stem.chunk_001.md)."""

@@ -13,6 +13,7 @@ output directory.
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
 import streamlit as st
@@ -21,6 +22,19 @@ from src import vertexai_pricing
 from src.config import DEFAULT_MODEL
 from src.execute_worker import GEMINI_STYLE_BACKENDS, ExecutionArtifacts
 from src.models import ConversionResult
+
+PREVIEW_CHAR_LIMIT = 20000
+
+
+def _markdown_preview_html(markdown: str) -> str:
+    """Return the styled, escaped HTML shell used for the Markdown preview."""
+    preview = html.escape(markdown[:PREVIEW_CHAR_LIMIT])
+    return f"""<div style="max-height:500px;overflow:auto;background:#161b22;
+                border:1px solid #30363d;border-radius:6px;padding:16px;
+                font-size:0.85rem;line-height:1.6;color:#e6edf3;
+                white-space:pre-wrap">
+                {preview}
+            </div>"""
 
 
 def render_result(result_payload: tuple, output_path: Path) -> None:
@@ -178,14 +192,10 @@ def render_result(result_payload: tuple, output_path: Path) -> None:
 
     with st.expander("Markdown preview", expanded=True):
         st.markdown(
-            f"""<div style="max-height:500px;overflow:auto;background:#161b22;
-                border:1px solid #30363d;border-radius:6px;padding:16px;
-                font-size:0.85rem;line-height:1.6;color:#e6edf3">
-                {result.markdown[:20000]}
-            </div>""",
+            _markdown_preview_html(result.markdown),
             unsafe_allow_html=True,
         )
-        if len(result.markdown) > 20000:
+        if len(result.markdown) > PREVIEW_CHAR_LIMIT:
             st.caption("Showing first 20,000 characters. Download or view raw for full content.")
 
     with st.expander("Raw Markdown (copy-ready)"):
