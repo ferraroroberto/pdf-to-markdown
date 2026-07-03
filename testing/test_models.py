@@ -88,7 +88,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="a" * 400,
-            backend_used="pdfplumber",
+            backend_used="hubgemini",
         )
         assert result.token_estimate == 100
 
@@ -96,7 +96,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="",
-            backend_used="pdfplumber",
+            backend_used="hubgemini",
         )
         assert result.token_estimate == 0
 
@@ -104,7 +104,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="text",
-            backend_used="marker",
+            backend_used="vertexai",
             metadata={"page_count": 12},
         )
         assert result.page_count == 12
@@ -113,7 +113,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="text",
-            backend_used="marker",
+            backend_used="vertexai",
         )
         assert result.page_count is None
 
@@ -122,7 +122,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="# Hello\n\nWorld",
-            backend_used="pdfplumber",
+            backend_used="hubgemini",
         )
         saved = result.save(out)
         assert saved == out
@@ -133,7 +133,7 @@ class TestConversionResult:
         result = ConversionResult(
             source=Path("doc.pdf"),
             markdown="content",
-            backend_used="pdfplumber",
+            backend_used="hubgemini",
         )
         result.save(out)
         assert out.exists()

@@ -4,10 +4,7 @@ pywin32; sys_platform == "win32"
 click
 rich
 
-# Backends (all installed by default on supported Python versions)
-pdfplumber
-# marker-pdf pins Pillow<11 and regex<2025 — no Py3.14+ Windows wheels; use Python 3.12–3.13 for Marker
-marker-pdf; python_version < "3.14"
+# Office-document pre-conversion (Linux/Unix path; Windows uses the Office COM API)
 docling
 
 # Hub Gemini backend (default) — routes PDFs through the local LLM hub
