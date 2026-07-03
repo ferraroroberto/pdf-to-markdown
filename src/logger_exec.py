@@ -124,11 +124,13 @@ def log_conversion_steps(
     ts = datetime.now(timezone.utc).isoformat()
 
     def _row(step: int, step_type: str, in_tok: int, out_tok: int,
+             total_tok: int | None = None,
              errors: int = 0, critical: int = 0, moderate: int = 0,
              minor: int = 0, verdict: str = "N/A",
              row_error: str | None = None) -> None:
         in_tok = int(in_tok or 0)
         out_tok = int(out_tok or 0)
+        row_total = int(total_tok or 0) or (in_tok + out_tok)
         cost_label, _ = calculate_cost(model, in_tok, out_tok, pricing_data)
         append_row({
             "timestamp": ts,
@@ -141,7 +143,7 @@ def log_conversion_steps(
             "auth_mode": auth_mode,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
+            "total_tokens": row_total,
             "cost_label": cost_label,
             "errors": errors,
             "critical": critical,
@@ -165,6 +167,7 @@ def log_conversion_steps(
         step_type="extraction",
         in_tok=extraction_step.get("step_input_tokens", meta.get("total_input_tokens", 0)),
         out_tok=extraction_step.get("step_output_tokens", meta.get("total_output_tokens", 0)),
+        total_tok=extraction_step.get("step_total_tokens"),
     )
 
     # Steps 1..N: one row per refinement pass
@@ -174,6 +177,7 @@ def log_conversion_steps(
             step_type="refinement",
             in_tok=track.get("step_input_tokens", 0),
             out_tok=track.get("step_output_tokens", 0),
+            total_tok=track.get("step_total_tokens"),
             errors=track.get("errors_found", 0),
             critical=track.get("critical", 0),
             moderate=track.get("moderate", 0),

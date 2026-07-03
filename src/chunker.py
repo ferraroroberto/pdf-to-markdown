@@ -117,11 +117,36 @@ def split_pdf(
         else:
             chunk_path = chunks_dir / f"chunk_{chunk_idx:03d}.pdf"
 
-        # Extract the page range into a new PDF
-        sub_doc = fitz.open()
-        sub_doc.insert_pdf(doc, from_page=actual_start, to_page=actual_end)
-        sub_doc.save(str(chunk_path))
-        sub_doc.close()
+        # Extract the page range into a new PDF.  Flat-layout chunks are
+        # resumable artifacts, so replace them atomically instead of saving
+        # directly onto a stale path from an interrupted run.
+        tmp_path: Path | None = None
+        save_path = chunk_path
+        if use_flat_layout:
+            tmp_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                dir=chunk_path.parent,
+                prefix=f".{chunk_path.name}.",
+                suffix=".tmp.pdf",
+            )
+            tmp_path = Path(tmp_file.name)
+            tmp_file.close()
+            save_path = tmp_path
+
+        try:
+            sub_doc = fitz.open()
+            try:
+                sub_doc.insert_pdf(doc, from_page=actual_start, to_page=actual_end)
+                sub_doc.save(str(save_path))
+            finally:
+                sub_doc.close()
+
+            if tmp_path is not None:
+                tmp_path.replace(chunk_path)
+        except Exception:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+            raise
 
         results.append((chunk_idx, chunk_path, actual_start, actual_end))
         logger.info(
