@@ -17,3 +17,7 @@ Canonical instructions for AI coding agents working in this repository. Claude C
 ## This repository
 Tool that converts PDF documents into clean, structured, token-efficient Markdown for LLM consumption.
 See `README.md` for setup, layout, and usage.
+
+## Internal architecture
+
+[`docs/architecture.mmd`](docs/architecture.mmd) is a hand-authored Mermaid diagram of this repo's own internal structure (Streamlit UI tabs, the shared `chunk_runner`/`pipeline` orchestration, the two Gemini backends, post-processing, and external dependencies). Update it in the same PR as any material structural change (a new backend, a tab added/removed, an orchestration module relocated) — same anti-staleness contract as a `.fleet.toml` `description` field. It is not auto-generated and not covered by the pytest suite.
