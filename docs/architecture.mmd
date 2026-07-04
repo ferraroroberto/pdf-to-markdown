@@ -1,0 +1,120 @@
+%% docs/architecture.mmd — pdf2md's own internal structure.
+%% Hand-authored, not generated — this repo has no fleet-wide crawler for its
+%% own internal shape (unlike the fleet's mechanically-aggregated system map).
+%% Update this diagram in the same PR as any material structural change (a new
+%% backend, a tab added/removed, an orchestration module relocated) — same
+%% anti-staleness contract as a `.fleet.toml` `description` field. See
+%% ferraroroberto/fleet-config#256 for the general convention this dogfoods.
+
+flowchart TB
+  subgraph entry["Entry points"]
+    STREAMLIT["app/app.py\nStreamlit UI (5 tabs)"]
+    CLI["src/cli.py\nClick + Rich CLI"]
+  end
+
+  subgraph ui["app/ — Streamlit UI"]
+    COMMON["_common.py\nshared UI helpers, config-sync"]
+    EXECUTE["execute.py + execute_render.py\nConvert File tab"]
+    BATCH["tab_batch.py\nBatch Convert tab"]
+    LOG["tab_log.py\nHistory tab"]
+    SETTINGS["tab_settings.py\nSettings tab"]
+    VERTEXTAB["tab_vertexai.py\nVertex AI pricing tab"]
+    REMOTE["remote_upload.py\nremote-session upload handler"]
+  end
+  STREAMLIT --> COMMON
+  STREAMLIT --> EXECUTE
+  STREAMLIT --> BATCH
+  STREAMLIT --> LOG
+  STREAMLIT --> SETTINGS
+  STREAMLIT --> VERTEXTAB
+  EXECUTE --> REMOTE
+
+  subgraph orchestration["src/ — shared orchestration"]
+    CHUNKRUNNER["chunk_runner.py\nsplit -> per-chunk convert -> merge\n(shared by Execute, Batch, CLI)"]
+    PIPELINE["pipeline.py\nsingle-file Pipeline: classify -> backend -> postprocess -> validate"]
+    WORKER["execute_worker.py\nthreaded conversion worker (no Streamlit)"]
+    BATCHPY["batch.py\nfolder discovery + batch driver"]
+    FILECONV["file_converter.py\nOffice COM / PyMuPDF -> PDF pre-convert"]
+    CLASSIFIER["classifier.py\nborn-digital vs scanned"]
+    CHUNKER["chunker.py\nPDF page split + markdown merge"]
+  end
+
+  EXECUTE --> WORKER
+  WORKER --> CHUNKRUNNER
+  BATCHPY --> CHUNKRUNNER
+  BATCH --> BATCHPY
+  CLI --> CHUNKRUNNER
+  CLI --> PIPELINE
+  BATCHPY --> PIPELINE
+  CHUNKRUNNER --> PIPELINE
+  CHUNKRUNNER --> CHUNKER
+  PIPELINE --> CLASSIFIER
+  WORKER --> FILECONV
+  BATCHPY --> FILECONV
+  CLI --> FILECONV
+  PIPELINE --> FILECONV
+
+  subgraph backends["Backends — src/ (registered in pipeline.py)"]
+    HUBGEMINI["hub_gemini_backend.py\nDEFAULT — Anthropic document block\n-> local LLM hub :8000 -> Gemini"]
+    VERTEXAI["vertexai_backend.py\nFALLBACK — google-genai -> Vertex AI direct"]
+    REFINEMENT["refinement.py\nshared extract -> refine loop, prompt/JSON helpers"]
+    AUTH["auth.py\nauth factory (api key | ADC)"]
+  end
+  PIPELINE --> HUBGEMINI
+  PIPELINE --> VERTEXAI
+  HUBGEMINI --> REFINEMENT
+  VERTEXAI --> REFINEMENT
+  VERTEXAI --> AUTH
+
+  subgraph postproc["Post-processing + reporting"]
+    POSTPROCESS["postprocess.py\nmarkdown cleaning pipeline"]
+    VALIDATION["validation.py\nquality validation -> ValidationReport"]
+    CORRECTIONS["corrections_report.py\nper-chunk corrections.md"]
+    MODELS["models.py\nConversionResult, ChunkResult, ValidationReport"]
+  end
+  PIPELINE --> POSTPROCESS
+  PIPELINE --> VALIDATION
+  CHUNKRUNNER --> CORRECTIONS
+  PIPELINE --> MODELS
+
+  subgraph logging["Config + logging"]
+    CONFIGPY["config.py\nSettings / MachineProfile <-> config.json"]
+    LOGGEREXEC["logger_exec.py\nJSONL execution logger -> tmp/exec_log.jsonl"]
+    LOGSTREAM["log_streaming.py\nTeeStream / QueueHandler"]
+    LOGGINGCFG["logging_config.py\nconsole + rotating file logger"]
+  end
+  SETTINGS --> CONFIGPY
+  CLI --> CONFIGPY
+  BATCHPY --> LOGGEREXEC
+  WORKER --> LOGSTREAM
+  WORKER --> LOGGEREXEC
+  LOGSTREAM --> LOGGINGCFG
+
+  subgraph external["External dependencies"]
+    HUB["local LLM hub\n127.0.0.1:8000 (claude-local-calls)"]
+    VERTEX["Google Vertex AI / Gemini API"]
+    OFFICE["Microsoft Office COM (Windows) / docling (other OS)"]
+    PYMUPDF["PyMuPDF (fitz)\nimage -> PDF, page split"]
+  end
+  HUBGEMINI -->|Anthropic document block| HUB
+  VERTEXAI -->|google-genai| VERTEX
+  FILECONV --> OFFICE
+  FILECONV --> PYMUPDF
+  CHUNKER --> PYMUPDF
+
+  subgraph data["Data artifacts"]
+    PROMPTS["prompts/*.md\nextraction + refinement prompts"]
+    EXECLOG["tmp/exec_log.jsonl"]
+    PRICING["pricing/vertexai_pricing.*\nfetched + cached"]
+  end
+  REFINEMENT --> PROMPTS
+  LOGGEREXEC --> EXECLOG
+  LOG --> EXECLOG
+  VERTEXTAB --> PRICING
+
+  subgraph tests["testing/ — pytest, no external services"]
+    TESTS["test_pipeline · test_chunk_runner · test_chunker ·\ntest_config · test_models · test_postprocess ·\ntest_validation · test_corrections_report ·\ntest_file_converter · test_execute_worker ·\ntest_execute_render · test_logger_exec ·\ntest_model_backend_consistency"]
+  end
+  TESTS -.->|covers| orchestration
+  TESTS -.->|covers| backends
+  TESTS -.->|covers| postproc
