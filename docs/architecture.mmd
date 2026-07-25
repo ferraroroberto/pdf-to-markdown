@@ -112,6 +112,13 @@ flowchart TB
   LOG --> EXECLOG
   VERTEXTAB --> PRICING
 
+  subgraph spikes["spikes/ — throwaway evaluation code, never imported by src or app"]
+    SPIKETRANSLATE["translation/\nissue 65 — translate + audit reuse refinement.py\nas a transport swap, render via PyMuPDF Story"]
+  end
+  SPIKETRANSLATE -.->|reuses| PIPELINE
+  SPIKETRANSLATE -.->|reuses| REFINEMENT
+  SPIKETRANSLATE -.-> PYMUPDF
+
   subgraph tests["testing/ — pytest, no external services"]
     TESTS["test_pipeline · test_chunk_runner · test_chunker ·\ntest_config · test_models · test_postprocess ·\ntest_validation · test_corrections_report ·\ntest_file_converter · test_execute_worker ·\ntest_execute_render · test_logger_exec ·\ntest_model_backend_consistency"]
   end

@@ -1,0 +1,30 @@
+{
+  "target_language": "English (UK)",
+  "terms": {
+    "Акт выполненных работ": "Certificate of Completed Works",
+    "Исполнитель": "Contractor",
+    "Заказчик": "Client",
+    "Основание": "Basis",
+    "Договор подряда": "Works Contract",
+    "Наименование работ": "Description of works",
+    "Кол-во": "Qty",
+    "Цена": "Unit price",
+    "Сумма": "Amount",
+    "Итого": "Subtotal",
+    "НДС": "VAT",
+    "Всего к оплате": "Total payable",
+    "Гарантийные обязательства": "Warranty obligations",
+    "Отсутствие претензий": "No outstanding claims",
+    "Банковские реквизиты": "Bank details",
+    "М.П.": "L.S. (seal)",
+    "ИНН": "INN (taxpayer number)",
+    "КПП": "KPP (tax registration reason code)",
+    "ОГРН": "OGRN (primary state registration number)",
+    "Р/с": "Settlement account",
+    "К/с": "Correspondent account",
+    "БИК": "BIC",
+    "усл.": "unit",
+    "шт.": "pcs",
+    "Страница": "Page"
+  }
+}
