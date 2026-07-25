@@ -82,6 +82,11 @@ pdf2md/
 ├── pricing/
 │   ├── vertexai_pricing_cache.json  # Live pricing cache (JSON)
 │   └── vertexai_pricing.md          # Pricing table as Markdown (human-readable)
+├── spikes/                 # Throwaway evaluation code — never imported by src/ or app/
+│   └── translation/        # Issue #65: layout-preserving translation (see docs/translation-spike.md)
+├── docs/
+│   ├── architecture.mmd    # Hand-authored internal-architecture diagram
+│   └── translation-spike.md  # Issue #65 findings and recommendation
 ├── testing/
 │   ├── conftest.py         # Shared fixtures (in-memory PDF/PNG generators)
 │   ├── test_config.py      # Config loading, saving, merging
