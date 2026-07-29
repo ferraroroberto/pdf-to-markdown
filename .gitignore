@@ -209,3 +209,5 @@ __marimo__/
 # Uploaded files (remote sessions via Cloudflare tunnel)
 uploads/
 output/
+# Launcher scratch (ephemeral images/logs written by the tray launcher)
+.launcher-tmp/
