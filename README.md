@@ -97,7 +97,12 @@ pdf2md/
 │   ├── test_validation.py  # Quality validation helpers
 │   ├── test_corrections_report.py  # Corrections report generation (data → markdown, verdict icons)
 │   ├── test_chunk_runner.py  # Shared chunk-conversion orchestration (split + max_chunks slice, resume, error policy, on_chunk hooks)
-│   └── test_model_backend_consistency.py  # Backend-attribute and model-id contract guard (shared refinement loop)
+│   ├── test_model_backend_consistency.py  # Backend-attribute and model-id contract guard (shared refinement loop)
+│   ├── test_pipeline.py     # Pipeline orchestration (single-file convert flow)
+│   ├── test_execute_worker.py  # Convert File tab worker — artifact cleanup
+│   ├── test_execute_render.py  # Convert File tab result-rendering helpers
+│   ├── test_logger_exec.py  # Structured JSONL execution logging
+│   └── test_remote_upload.py  # Remote-upload destination handling (attacker-controlled filenames)
 ├── tmp/
 │   ├── exec_log.jsonl      # Persistent execution log (append-only)
 │   └── pdf2md_*.log        # Rotating debug log files
@@ -204,6 +209,7 @@ All other Vertex AI settings (project ID, location, model, etc.) are configured 
 
 | Flag | Default | Description |
 |---|---|---|
+| `-o / --output` | print to stdout | Output file or directory. When omitted, a single file's markdown is printed to stdout instead of saved; **required** when the input is a directory. |
 | `--backend` | config (`hubgemini`) | `hubgemini` (local LLM hub) \| `vertexai` (direct Vertex AI) |
 | `--auth-mode` | config | `api` \| `gcloud` (vertexai backend only) |
 | `--project-id` | config | Google Cloud project ID |
