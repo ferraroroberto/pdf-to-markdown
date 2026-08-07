@@ -22,21 +22,16 @@ from pathlib import Path
 import streamlit as st
 
 from _common import (
-    list_extraction_prompts,
-    list_refinement_prompts,
+    drain_log_queue_and_maybe_finish,
+    render_advanced_vertexai_options,
     render_log_box,
     sync_config_defaults_on_change,
 )
 from execute_render import render_result
 from remote_upload import is_remote_session, save_uploaded_file, ACCEPT_TYPES
 from src.classifier import classify_pdf
-from src.config import GEMINI_MODELS, load_settings
+from src.config import load_settings
 from src.execute_worker import run_execute_conversion
-
-# Gemini model options shown in the UI (order = dropdown order).
-# Sourced from the single shared constant in src.config so the Execute, Batch,
-# and Settings dropdowns and config.json never drift apart.
-_VAI_MODELS: list[str] = GEMINI_MODELS
 
 
 # ── Session state bootstrap ─────────────────────────────────────────────────────
@@ -64,20 +59,26 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
+# Widget keys this tab uses for the shared Advanced-options Vertex AI block,
+# keyed by src.config.VERTEXAI_FIELDS name.
+_ADV_KEYS = {
+    "project_id": "vai_project_id",
+    "location": "vai_location",
+    "model": "vai_model_id",
+    "auth_mode": "vai_auth_mode",
+    "refine_iterations": "vai_refine_iterations",
+    "clean_stop_max_errors": "vai_clean_stop_max_errors",
+    "diminishing_returns_enabled": "vai_diminishing_returns",
+    "extraction_prompt": "vai_extraction_prompt_file",
+    "refinement_prompt": "vai_refinement_prompt_file",
+}
+
 # Widget keys cleared when config.json changes so the Execute-tab widgets
 # re-read the refreshed defaults on the next render.
 _SYNC_POP_KEYS = (
     "ex_chunk_size_input",
     "ex_chunk_overlap_input",
-    "vai_project_id",
-    "vai_location",
-    "vai_auth_mode",
-    "vai_model_id",
-    "vai_refine_iterations",
-    "vai_extraction_prompt_file",
-    "vai_refinement_prompt_file",
-    "vai_clean_stop_max_errors",
-    "vai_diminishing_returns",
+    *_ADV_KEYS.values(),
 )
 
 
@@ -223,104 +224,9 @@ def run() -> None:
 
     # ── Advanced options (Vertex AI + chunking) ──────────────────────────────
     with st.expander("Advanced options", expanded=False):
-        # Row 1: Project ID | Location | Refinement Passes
-        adv1, adv2, adv3 = st.columns([2, 2, 2])
-        with adv1:
-            st.text_input(
-                "Project ID",
-                value=vai_cfg.project_id,
-                help="Google Cloud project ID (from the active machine profile).",
-                key="vai_project_id",
-                disabled=running,
-            )
-        with adv2:
-            st.text_input(
-                "Location",
-                value=vai_cfg.location,
-                help="Vertex AI region, e.g. europe-west3.",
-                key="vai_location",
-                disabled=running,
-            )
-        with adv3:
-            st.number_input(
-                "Refinement Passes",
-                min_value=0,
-                max_value=10,
-                value=vai_cfg.refine_iterations,
-                step=1,
-                help="Number of refinement passes after extraction. 0 = extraction only.",
-                key="vai_refine_iterations",
-                disabled=running,
-            )
-
-        # Row 2: Auth Mode | Model | Max Errors (CLEAN)
-        adv4, adv5, adv6 = st.columns([2, 2, 2])
-        with adv4:
-            st.selectbox(
-                "Auth Mode",
-                ["api", "gcloud"],
-                index=0 if vai_cfg.auth_mode == "api" else 1,
-                help="**api**: uses GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
-                key="vai_auth_mode",
-                disabled=running,
-            )
-        with adv5:
-            _model_idx = _VAI_MODELS.index(vai_cfg.model) if vai_cfg.model in _VAI_MODELS else 0
-            st.selectbox(
-                "Model",
-                _VAI_MODELS,
-                index=_model_idx,
-                help="Gemini model to use for extraction.",
-                key="vai_model_id",
-                disabled=running,
-            )
-        with adv6:
-            st.number_input(
-                "Max Errors (CLEAN)",
-                min_value=-1,
-                value=vai_cfg.clean_stop_max_errors,
-                step=1,
-                help=(
-                    "Early-stop threshold for refinement. "
-                    "**-1**: stop on any CLEAN verdict. **0**: only when 0 errors remain."
-                ),
-                key="vai_clean_stop_max_errors",
-                disabled=running,
-            )
-
-        st.checkbox(
-            "Enable diminishing returns stop",
-            value=vai_cfg.diminishing_returns_enabled,
-            help=(
-                "When enabled, refinement stops early if two consecutive passes show no "
-                "reduction in errors."
-            ),
-            key="vai_diminishing_returns",
-            disabled=running,
+        vai_values = render_advanced_vertexai_options(
+            vai_cfg, running=running, keys=_ADV_KEYS,
         )
-
-        # Row 3: Extraction Prompt | Refinement Prompt
-        _ext_prompts = list_extraction_prompts()
-        _ref_prompts = list_refinement_prompts()
-        adv7, adv8 = st.columns([3, 3])
-        with adv7:
-            _ext_default = vai_cfg.extraction_prompt
-            st.selectbox(
-                "Extraction Prompt",
-                _ext_prompts,
-                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
-                key="vai_extraction_prompt_file",
-                disabled=running,
-            )
-        with adv8:
-            _ref_default = vai_cfg.refinement_prompt
-            st.selectbox(
-                "Refinement Prompt",
-                _ref_prompts,
-                index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
-                key="vai_refinement_prompt_file",
-                disabled=running,
-            )
 
         st.markdown("---")
         st.markdown("##### Processing")
@@ -369,8 +275,6 @@ def run() -> None:
             disabled=running,
         )
 
-    auth_mode: str = st.session_state.get("vai_auth_mode", vai_cfg.auth_mode)
-
     if pdf_path is not None and not running:
         st.caption(f"Output will be saved to: `{pdf_path.with_suffix('.md')}`")
 
@@ -413,17 +317,7 @@ def run() -> None:
             _backend_name = cfg.backend
             _run_settings = load_settings({
                 "backend": _backend_name,
-                "vertexai": {
-                    "project_id": st.session_state.get("vai_project_id", vai_cfg.project_id),
-                    "location": st.session_state.get("vai_location", vai_cfg.location),
-                    "model": st.session_state.get("vai_model_id", vai_cfg.model),
-                    "auth_mode": auth_mode,
-                    "refine_iterations": st.session_state.get("vai_refine_iterations", vai_cfg.refine_iterations),
-                    "clean_stop_max_errors": st.session_state.get("vai_clean_stop_max_errors", vai_cfg.clean_stop_max_errors),
-                    "diminishing_returns_enabled": st.session_state.get("vai_diminishing_returns", vai_cfg.diminishing_returns_enabled),
-                    "extraction_prompt": st.session_state.get("vai_extraction_prompt_file", vai_cfg.extraction_prompt),
-                    "refinement_prompt": st.session_state.get("vai_refinement_prompt_file", vai_cfg.refinement_prompt),
-                },
+                "vertexai": vai_values,
             })
             extra_kwargs: dict = build_backend_kwargs(_run_settings, dry_run=dry_run_check)
 
@@ -453,25 +347,7 @@ def run() -> None:
 
     # ── 4. Poll log queue ───────────────────────────────────────────────────
     if st.session_state.ex_running:
-        log_q = st.session_state.ex_log_q
-        result_q = st.session_state.ex_result_q
-
-        finished = False
-        while True:
-            try:
-                msg = log_q.get_nowait()
-            except queue.Empty:
-                break
-            if msg is None:
-                finished = True
-                break
-            st.session_state.ex_logs.append(msg)
-
-        if finished:
-            st.session_state.ex_running = False
-            if not result_q.empty():
-                st.session_state.ex_result = result_q.get_nowait()
-            st.rerun()
+        drain_log_queue_and_maybe_finish(st.session_state, prefix="ex_")
 
     # ── 5. Render logs ──────────────────────────────────────────────────────
     if st.session_state.ex_logs:

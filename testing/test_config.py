@@ -8,17 +8,34 @@ from unittest.mock import patch
 
 import pytest
 
+from dataclasses import fields
+
 from src.config import (
     BatchSettings,
     LoggingSettings,
     MachineProfile,
     ProcessingSettings,
     Settings,
+    VERTEXAI_FIELDS,
     VertexAISettings,
     _deep_merge,
     load_settings,
     save_settings,
 )
+
+# Non-default value per Vertex AI field, used to prove every field survives a
+# load → save → load round trip rather than silently falling back to a default.
+_NON_DEFAULT_VERTEXAI = {
+    "project_id": "proj-x",
+    "location": "us-east1",
+    "model": "gemini-2.5-flash",
+    "auth_mode": "gcloud",
+    "refine_iterations": 3,
+    "clean_stop_max_errors": 7,
+    "diminishing_returns_enabled": False,
+    "extraction_prompt": "prompts/extraction_alt.md",
+    "refinement_prompt": "prompts/refinement_alt.md",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -202,3 +219,68 @@ class TestSaveSettings:
             save_settings(s)
             s2 = load_settings()
         assert s2.batch.extensions == [".pdf", ".pptx"]
+
+
+# ---------------------------------------------------------------------------
+# Single-source guard for the Vertex AI field set (issue #70)
+# ---------------------------------------------------------------------------
+
+
+class TestVertexAIFieldSetIsSingleSourced:
+    """The nine Vertex AI fields are declared once and derived everywhere else.
+
+    These lock the collapse of what used to be five hand-maintained copies of
+    the field list (both dataclasses, the machine loader, the effective-settings
+    build, and the save remap) down to one declaration on ``VertexAISettings``.
+    """
+
+    def test_machine_profile_is_vertexai_settings_plus_name(self):
+        machine_fields = {f.name for f in fields(MachineProfile)}
+        assert machine_fields == set(VERTEXAI_FIELDS) | {"name"}
+
+    def test_vertexai_fields_matches_the_dataclass(self):
+        assert VERTEXAI_FIELDS == tuple(f.name for f in fields(VertexAISettings))
+
+    def test_test_fixture_covers_every_field(self):
+        # Guards the two round-trip tests below: a newly added field must be
+        # given a non-default value here or they would silently stop covering it.
+        assert set(_NON_DEFAULT_VERTEXAI) == set(VERTEXAI_FIELDS)
+
+    def test_every_field_loads_from_the_machine_profile(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(
+            json.dumps({"machines": [{"name": "Default", **_NON_DEFAULT_VERTEXAI}]}),
+            encoding="utf-8",
+        )
+        with patch("src.config._CONFIG_PATH", cfg):
+            s = load_settings()
+        for name, expected in _NON_DEFAULT_VERTEXAI.items():
+            assert getattr(s.vertexai, name) == expected, f"{name} not loaded"
+
+    def test_every_field_saves_back_to_the_active_machine(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        with patch("src.config._CONFIG_PATH", cfg):
+            s = load_settings({"vertexai": dict(_NON_DEFAULT_VERTEXAI)})
+            save_settings(s)
+            s2 = load_settings()
+        for name, expected in _NON_DEFAULT_VERTEXAI.items():
+            assert getattr(s2.machines[0], name) == expected, f"{name} not persisted"
+            assert getattr(s2.vertexai, name) == expected, f"{name} not resolved"
+
+    def test_saved_machine_block_keeps_name_first(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        with patch("src.config._CONFIG_PATH", cfg):
+            save_settings(load_settings())
+        raw = json.loads(cfg.read_text(encoding="utf-8"))
+        assert list(raw["machines"][0])[0] == "name"
+
+    def test_string_values_are_coerced_to_declared_types(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        cfg.write_text(
+            json.dumps({"machines": [{"name": "Default", "refine_iterations": "4"}]}),
+            encoding="utf-8",
+        )
+        with patch("src.config._CONFIG_PATH", cfg):
+            s = load_settings()
+        assert s.vertexai.refine_iterations == 4
+        assert isinstance(s.vertexai.refine_iterations, int)

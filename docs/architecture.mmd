@@ -13,7 +13,7 @@ flowchart TB
   end
 
   subgraph ui["app/ — Streamlit UI"]
-    COMMON["_common.py\nshared UI helpers, config-sync"]
+    COMMON["_common.py\nshared UI helpers: config-sync,\nAdvanced options block, log-queue drain"]
     EXECUTE["execute.py + execute_render.py\nConvert File tab"]
     BATCH["tab_batch.py\nBatch Convert tab"]
     LOG["tab_log.py\nHistory tab"]
@@ -28,6 +28,8 @@ flowchart TB
   STREAMLIT --> SETTINGS
   STREAMLIT --> VERTEXTAB
   EXECUTE --> REMOTE
+  EXECUTE --> COMMON
+  BATCH --> COMMON
 
   subgraph orchestration["src/ — shared orchestration"]
     CHUNKRUNNER["chunk_runner.py\nsplit -> per-chunk convert -> merge\n(shared by Execute, Batch, CLI)"]

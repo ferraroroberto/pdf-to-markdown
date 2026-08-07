@@ -22,17 +22,14 @@ import streamlit as st
 from _common import (
     QueueHandler,
     TeeStream,
-    list_extraction_prompts,
-    list_refinement_prompts,
+    drain_log_queue_and_maybe_finish,
+    render_advanced_vertexai_options,
     render_log_box,
     sync_config_defaults_on_change,
 )
 from remote_upload import is_remote_session, save_uploaded_files, ACCEPT_TYPES
-from src.config import DEFAULT_MODEL, GEMINI_MODELS, load_settings
+from src.config import DEFAULT_MODEL, load_settings
 from src.models import ChunkResult
-
-# Gemini model options — shared constant (see src.config.GEMINI_MODELS)
-_VAI_MODELS: list[str] = GEMINI_MODELS
 
 
 # ── Worker ──────────────────────────────────────────────────────────────────────
@@ -148,6 +145,20 @@ def _init_state() -> None:
             st.session_state[k] = v
 
 
+# Widget keys this tab uses for the shared Advanced-options Vertex AI block,
+# keyed by src.config.VERTEXAI_FIELDS name.
+_ADV_KEYS = {
+    "project_id": "bt_project_id",
+    "location": "bt_location",
+    "model": "bt_model_id",
+    "auth_mode": "bt_auth_mode_select",
+    "refine_iterations": "bt_refine_iterations",
+    "clean_stop_max_errors": "bt_clean_stop_max_errors",
+    "diminishing_returns_enabled": "bt_diminishing_returns",
+    "extraction_prompt": "bt_extraction_prompt",
+    "refinement_prompt": "bt_refinement_prompt",
+}
+
 # Widget keys cleared when config.json changes so the Batch-tab widgets
 # re-read the refreshed defaults on the next render.
 _SYNC_POP_KEYS = (
@@ -155,15 +166,7 @@ _SYNC_POP_KEYS = (
     "bt_chunk_size_input",
     "bt_chunk_overlap_input",
     "bt_extensions",
-    "bt_project_id",
-    "bt_location",
-    "bt_auth_mode_select",
-    "bt_model_id",
-    "bt_refine_iterations",
-    "bt_extraction_prompt",
-    "bt_refinement_prompt",
-    "bt_clean_stop_max_errors",
-    "bt_diminishing_returns",
+    *_ADV_KEYS.values(),
 )
 
 
@@ -304,91 +307,9 @@ def run() -> None:
 
     # ── Advanced options ────────────────────────────────────────────────────
     with st.expander("Advanced options", expanded=False):
-        # Row 1: Project ID | Location | Refinement Passes
-        vb1, vb2, vb3 = st.columns([2, 2, 2])
-        with vb1:
-            st.text_input(
-                "Project ID", value=vai.project_id,
-                help="Google Cloud project ID (from the active machine profile).",
-                key="bt_project_id", disabled=running,
-            )
-        with vb2:
-            st.text_input(
-                "Location", value=vai.location,
-                help="Vertex AI region, e.g. europe-west3.",
-                key="bt_location", disabled=running,
-            )
-        with vb3:
-            st.number_input(
-                "Refinement Passes",
-                min_value=0, max_value=10,
-                value=vai.refine_iterations,
-                step=1,
-                help="Number of refinement passes after extraction. 0 = extraction only.",
-                key="bt_refine_iterations", disabled=running,
-            )
-
-        # Row 2: Auth Mode | Model | Max Errors (CLEAN)
-        vb4, vb5, vb6 = st.columns([2, 2, 2])
-        with vb4:
-            st.selectbox(
-                "Auth Mode",
-                ["api", "gcloud"],
-                index=0 if vai.auth_mode == "api" else 1,
-                help="**api**: uses GOOGLE_API_KEY.  **gcloud**: Application Default Credentials.",
-                key="bt_auth_mode_select",
-                disabled=running,
-            )
-        with vb5:
-            _model_idx = _VAI_MODELS.index(vai.model) if vai.model in _VAI_MODELS else 0
-            st.selectbox(
-                "Model", _VAI_MODELS, index=_model_idx, key="bt_model_id", disabled=running,
-            )
-        with vb6:
-            st.number_input(
-                "Max Errors (CLEAN)",
-                min_value=-1,
-                value=vai.clean_stop_max_errors,
-                step=1,
-                help=(
-                    "Early-stop threshold for refinement. "
-                    "**-1**: stop on any CLEAN verdict. **0**: only when 0 errors remain."
-                ),
-                key="bt_clean_stop_max_errors",
-                disabled=running,
-            )
-
-        st.checkbox(
-            "Enable diminishing returns stop",
-            value=vai.diminishing_returns_enabled,
-            help=(
-                "When enabled, refinement stops early if two consecutive passes show no "
-                "reduction in errors."
-            ),
-            key="bt_diminishing_returns",
-            disabled=running,
+        vai_values = render_advanced_vertexai_options(
+            vai, running=running, keys=_ADV_KEYS,
         )
-
-        # Row 3: Extraction Prompt | Refinement Prompt
-        _ext_prompts = list_extraction_prompts()
-        _ref_prompts = list_refinement_prompts()
-        vb7, vb8 = st.columns([3, 3])
-        with vb7:
-            _ext_default = vai.extraction_prompt
-            st.selectbox(
-                "Extraction Prompt", _ext_prompts,
-                index=_ext_prompts.index(_ext_default) if _ext_default in _ext_prompts else 0,
-                key="bt_extraction_prompt", disabled=running,
-            )
-        with vb8:
-            _ref_default = vai.refinement_prompt
-            st.selectbox(
-                "Refinement Prompt",
-                _ref_prompts,
-                index=_ref_prompts.index(_ref_default) if _ref_default in _ref_prompts else 0,
-                key="bt_refinement_prompt",
-                disabled=running,
-            )
 
         st.markdown("---")
         st.markdown("##### Processing")
@@ -440,8 +361,6 @@ def run() -> None:
             )
         if not selected_extensions:
             selected_extensions = [".pdf"]
-
-    auth_mode: str = st.session_state.get("bt_auth_mode_select", vai.auth_mode)
 
     st.divider()
 
@@ -505,17 +424,7 @@ def run() -> None:
                 # from the CLI/batch defaults.
                 overrides = {
                     "backend": cfg.backend,
-                    "vertexai": {
-                        "project_id": st.session_state.get("bt_project_id", vai.project_id),
-                        "location": st.session_state.get("bt_location", vai.location),
-                        "model": st.session_state.get("bt_model_id", vai.model),
-                        "auth_mode": auth_mode,
-                        "refine_iterations": st.session_state.get("bt_refine_iterations", vai.refine_iterations),
-                        "clean_stop_max_errors": st.session_state.get("bt_clean_stop_max_errors", vai.clean_stop_max_errors),
-                        "diminishing_returns_enabled": st.session_state.get("bt_diminishing_returns", vai.diminishing_returns_enabled),
-                        "extraction_prompt": st.session_state.get("bt_extraction_prompt", vai.extraction_prompt),
-                        "refinement_prompt": st.session_state.get("bt_refinement_prompt", vai.refinement_prompt),
-                    },
+                    "vertexai": vai_values,
                     "processing": {
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
@@ -547,25 +456,7 @@ def run() -> None:
 
     # ── Poll log queue ──────────────────────────────────────────────────────
     if st.session_state.bt_running:
-        log_q = st.session_state.bt_log_q
-        result_q = st.session_state.bt_result_q
-
-        finished = False
-        while True:
-            try:
-                msg = log_q.get_nowait()
-            except queue.Empty:
-                break
-            if msg is None:
-                finished = True
-                break
-            st.session_state.bt_logs.append(msg)
-
-        if finished:
-            st.session_state.bt_running = False
-            if not result_q.empty():
-                st.session_state.bt_result = result_q.get_nowait()
-            st.rerun()
+        drain_log_queue_and_maybe_finish(st.session_state, prefix="bt_")
 
     # ── Render logs ─────────────────────────────────────────────────────────
     if st.session_state.bt_logs:

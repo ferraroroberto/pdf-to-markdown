@@ -17,9 +17,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 logger = logging.getLogger("config")
 
@@ -57,10 +57,16 @@ HUB_MODEL: str = "gemini_pro"
 
 
 @dataclass
-class MachineProfile:
-    """Per-machine Vertex AI settings profile."""
+class VertexAISettings:
+    """Effective Vertex AI settings (resolved from the active machine profile).
 
-    name: str = "Default"
+    **The single declaration of the Vertex AI field set.** A machine profile is
+    the same nine fields plus a name (:class:`MachineProfile`), the raw
+    config.json loader coerces them through :func:`_resolve_vertexai_fields`,
+    and :func:`save_settings` maps them back with :func:`dataclasses.replace` —
+    so adding a Vertex AI setting means editing this class and nothing else.
+    """
+
     project_id: str = ""
     location: str = "europe-west3"
     model: str = DEFAULT_MODEL
@@ -73,18 +79,23 @@ class MachineProfile:
 
 
 @dataclass
-class VertexAISettings:
-    """Effective Vertex AI settings (resolved from the active machine profile)."""
+class MachineProfile(VertexAISettings):
+    """Per-machine Vertex AI settings profile — :class:`VertexAISettings` + a name.
 
-    project_id: str = ""
-    location: str = "europe-west3"
-    model: str = DEFAULT_MODEL
-    auth_mode: str = "api"
-    refine_iterations: int = 0
-    clean_stop_max_errors: int = 0
-    diminishing_returns_enabled: bool = True
-    extraction_prompt: str = "prompts/extraction_rag.md"
-    refinement_prompt: str = "prompts/refinement_rag.md"
+    Inherits the nine Vertex AI fields rather than restating them, so a profile
+    and the effective settings resolved from it cannot drift apart. ``name`` is
+    declared last because inherited fields come first in a dataclass; it is
+    re-hoisted to the front on serialisation (:func:`_machine_to_dict`) so
+    config.json keeps its familiar shape.
+    """
+
+    name: str = "Default"
+
+
+# Canonical Vertex AI field names, derived from the one dataclass that declares
+# them. Also the key set of a ``load_settings`` ``vertexai`` override block, so
+# the UI's Advanced-options helper collects exactly these.
+VERTEXAI_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(VertexAISettings))
 
 
 @dataclass
@@ -140,18 +151,11 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
     # ── Load machines ────────────────────────────────────────────────────────
     raw_machines = raw.get("machines", [])
     machines: list[MachineProfile] = []
+    _field_defaults = VertexAISettings()
     for m in raw_machines:
         machines.append(MachineProfile(
             name=str(m.get("name", "Default")),
-            project_id=str(m.get("project_id", "")),
-            location=str(m.get("location", "europe-west3")),
-            model=str(m.get("model", DEFAULT_MODEL)),
-            auth_mode=str(m.get("auth_mode", "api")),
-            refine_iterations=int(m.get("refine_iterations", 0)),
-            clean_stop_max_errors=int(m.get("clean_stop_max_errors", 0)),
-            diminishing_returns_enabled=bool(m.get("diminishing_returns_enabled", True)),
-            extraction_prompt=str(m.get("extraction_prompt", "prompts/extraction_rag.md")),
-            refinement_prompt=str(m.get("refinement_prompt", "prompts/refinement_rag.md")),
+            **_resolve_vertexai_fields(m, _field_defaults),
         ))
 
     if not machines:
@@ -173,19 +177,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> Settings:
 
     # ── Build effective VertexAI settings from active machine ────────────────
     vai_overrides = (overrides or {}).get("vertexai", {})
-    vai = VertexAISettings(
-        project_id=str(vai_overrides.get("project_id", active_machine.project_id)),
-        location=str(vai_overrides.get("location", active_machine.location)),
-        model=str(vai_overrides.get("model", active_machine.model)),
-        auth_mode=str(vai_overrides.get("auth_mode", active_machine.auth_mode)),
-        refine_iterations=int(vai_overrides.get("refine_iterations", active_machine.refine_iterations)),
-        clean_stop_max_errors=int(vai_overrides.get("clean_stop_max_errors", active_machine.clean_stop_max_errors)),
-        diminishing_returns_enabled=bool(
-            vai_overrides.get("diminishing_returns_enabled", active_machine.diminishing_returns_enabled)
-        ),
-        extraction_prompt=str(vai_overrides.get("extraction_prompt", active_machine.extraction_prompt)),
-        refinement_prompt=str(vai_overrides.get("refinement_prompt", active_machine.refinement_prompt)),
-    )
+    vai = VertexAISettings(**_resolve_vertexai_fields(vai_overrides, active_machine))
 
     # ── Remaining sections ───────────────────────────────────────────────────
     proc_raw = _deep_merge(raw.get("processing", {}), (overrides or {}).get("processing", {}))
@@ -222,24 +214,12 @@ def save_settings(settings: Settings) -> None:
     The active machine's fields are updated from ``settings.vertexai`` so edits
     in the Settings tab are persisted to the correct machine profile.
     """
-    # Update the active machine with current vertexai values
-    updated_machines = []
-    for m in settings.machines:
-        if m.name == settings.active_machine:
-            updated_machines.append(MachineProfile(
-                name=m.name,
-                project_id=settings.vertexai.project_id,
-                location=settings.vertexai.location,
-                model=settings.vertexai.model,
-                auth_mode=settings.vertexai.auth_mode,
-                refine_iterations=settings.vertexai.refine_iterations,
-                clean_stop_max_errors=settings.vertexai.clean_stop_max_errors,
-                diminishing_returns_enabled=settings.vertexai.diminishing_returns_enabled,
-                extraction_prompt=settings.vertexai.extraction_prompt,
-                refinement_prompt=settings.vertexai.refinement_prompt,
-            ))
-        else:
-            updated_machines.append(m)
+    # Update the active machine with current vertexai values. ``replace`` copies
+    # the nine inherited fields across and keeps ``name`` — no field list here.
+    updated_machines = [
+        replace(m, **asdict(settings.vertexai)) if m.name == settings.active_machine else m
+        for m in settings.machines
+    ]
 
     _write_config(updated_machines, settings)
 
@@ -302,6 +282,37 @@ def build_backend_kwargs(
 # ── Internal helpers ────────────────────────────────────────────────────────────
 
 
+def _resolve_vertexai_fields(
+    source: Mapping[str, Any] | None,
+    fallback: VertexAISettings,
+) -> dict[str, Any]:
+    """Resolve the Vertex AI field set from *source*, defaulting to *fallback*.
+
+    Values present in *source* (a raw config.json machine block, or a
+    ``vertexai`` override block) win; anything missing comes from *fallback*
+    (the dataclass defaults, or the active machine profile). Each value is
+    coerced with the constructor of its declared default's type — the same
+    ``str()`` / ``int()`` / ``bool()`` calls the field list used to spell out
+    one by one — so JSON strings still become ints.
+    """
+    source = source or {}
+    return {
+        f.name: type(f.default)(source.get(f.name, getattr(fallback, f.name)))
+        for f in fields(VertexAISettings)
+    }
+
+
+def _machine_to_dict(machine: MachineProfile) -> dict[str, Any]:
+    """Serialise a profile with ``name`` first.
+
+    ``name`` is declared last on :class:`MachineProfile` (inherited dataclass
+    fields come first), so re-hoist it rather than let config.json's machine
+    blocks flip key order.
+    """
+    data = asdict(machine)
+    return {"name": data.pop("name"), **data}
+
+
 def _write_config(machines: list[MachineProfile], settings: Settings) -> None:
     """Single config.json serialiser shared by both public savers.
 
@@ -313,7 +324,7 @@ def _write_config(machines: list[MachineProfile], settings: Settings) -> None:
     data = {
         "active_machine": settings.active_machine,
         "backend": settings.backend,
-        "machines": [asdict(m) for m in machines],
+        "machines": [_machine_to_dict(m) for m in machines],
         "processing": asdict(settings.processing),
         "batch": asdict(settings.batch),
         "logging": asdict(settings.logging),

@@ -237,6 +237,50 @@ def convert_folder_to_pdf(
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
+def _chunk_result_from(
+    *,
+    source: Path,
+    chunk_idx: int,
+    chunk_pages: str,
+    markdown: str,
+    backend_used: str,
+    meta: dict,
+    pricing_data: dict,
+    error: str | None = None,
+) -> ChunkResult:
+    """Build a :class:`ChunkResult` from a conversion's metadata.
+
+    The single place that reads conversion metadata into a result row — both
+    the whole-file path (:func:`_process_single`) and the per-chunk callback in
+    :func:`_process_chunked` go through here, so a new metric is added once.
+    """
+    from src.vertexai_pricing import calculate_cost
+
+    total_in = meta.get("total_input_tokens", 0)
+    total_out = meta.get("total_output_tokens", 0)
+    cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
+
+    refinement_log: list[dict] = meta.get("refinement_log", [])
+    last_row = refinement_log[-1] if refinement_log else {}
+
+    return ChunkResult(
+        source=source,
+        chunk_idx=chunk_idx,
+        chunk_pages=chunk_pages,
+        markdown=markdown,
+        backend_used=backend_used,
+        metadata=meta,
+        iteration=meta.get("iterations_completed", 0),
+        errors=last_row.get("errors_found", 0),
+        critical=last_row.get("critical", 0),
+        moderate=last_row.get("moderate", 0),
+        minor=last_row.get("minor", 0),
+        verdict=meta.get("final_verdict", "N/A"),
+        cost_label=cost_label,
+        error=error,
+    )
+
+
 def _process_single(
     pdf_path: Path,
     pipe: Pipeline,
@@ -247,8 +291,6 @@ def _process_single(
     pricing_data: dict,
     progress,
 ) -> list[ChunkResult]:
-    from src.vertexai_pricing import calculate_cost
-
     try:
         result = pipe.convert(pdf_path, validate_output=validate_output, **backend_kwargs)
     except Exception as exc:
@@ -270,27 +312,14 @@ def _process_single(
         progress(f"  Saved → {out_path.name}")
 
     meta = result.metadata
-    total_in = meta.get("total_input_tokens", 0)
-    total_out = meta.get("total_output_tokens", 0)
-    cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
-
-    refinement_log: list[dict] = meta.get("refinement_log", [])
-    last_row = refinement_log[-1] if refinement_log else {}
-
-    cr = ChunkResult(
+    cr = _chunk_result_from(
         source=pdf_path,
         chunk_idx=0,
         chunk_pages="all",
         markdown=result.markdown,
         backend_used=result.backend_used,
-        metadata=meta,
-        iteration=meta.get("iterations_completed", 0),
-        errors=last_row.get("errors_found", 0),
-        critical=last_row.get("critical", 0),
-        moderate=last_row.get("moderate", 0),
-        minor=last_row.get("minor", 0),
-        verdict=meta.get("final_verdict", "N/A"),
-        cost_label=cost_label,
+        meta=meta,
+        pricing_data=pricing_data,
     )
 
     _log_steps(pdf_path, cr, meta, settings, pricing_data)
@@ -316,7 +345,6 @@ def _process_chunked(
         pre_convert_to_pdf,
     )
     from src.file_converter import needs_conversion as _needs_conv
-    from src.vertexai_pricing import calculate_cost
 
     # Pre-convert non-PDF inputs to PDF up front so chunking works uniformly
     # with the single-file paths (src/cli.py:_run_single and
@@ -354,26 +382,14 @@ def _process_chunked(
                     outcome.spec.idx, pdf_path.name, outcome.error,
                 )
             meta = outcome.metadata
-            total_in = meta.get("total_input_tokens", 0)
-            total_out = meta.get("total_output_tokens", 0)
-            cost_label, _ = calculate_cost(meta.get("model", ""), total_in, total_out, pricing_data)
-            refinement_log: list[dict] = meta.get("refinement_log", [])
-            last_row = refinement_log[-1] if refinement_log else {}
-
-            cr = ChunkResult(
+            cr = _chunk_result_from(
                 source=pdf_path,
                 chunk_idx=outcome.spec.idx,
                 chunk_pages=outcome.spec.pages_label,
                 markdown=outcome.markdown,
                 backend_used=outcome.backend_used if not outcome.error else settings.backend,
-                metadata=meta,
-                iteration=meta.get("iterations_completed", 0),
-                errors=last_row.get("errors_found", 0),
-                critical=last_row.get("critical", 0),
-                moderate=last_row.get("moderate", 0),
-                minor=last_row.get("minor", 0),
-                verdict=meta.get("final_verdict", "N/A"),
-                cost_label=cost_label,
+                meta=meta,
+                pricing_data=pricing_data,
                 error=outcome.error,
             )
             chunk_results.append(cr)
