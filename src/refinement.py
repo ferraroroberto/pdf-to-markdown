@@ -221,7 +221,13 @@ def _parse_refinement_response(text: str) -> dict:
     """Parse the JSON response from a refinement step.
 
     Strips markdown code fences if the model wraps the JSON in them.
-    Returns a fallback structure on parse failure to avoid losing work.
+
+    On parse failure — after all repair attempts — returns a ``PARSE_ERROR``
+    fallback that deliberately **omits** ``corrected_markdown``, so a caller
+    reading it with a default (``parsed.get("corrected_markdown", current)``)
+    keeps the Markdown it already has.  Putting the unparseable response there
+    would overwrite good extracted Markdown with a broken JSON blob, which is
+    the opposite of avoiding lost work.
     """
     text = text.strip()
 
@@ -279,7 +285,9 @@ def _parse_refinement_response(text: str) -> dict:
                 "verdict": "PARSE_ERROR",
             },
             "corrections": [],
-            "corrected_markdown": text,
+            # No "corrected_markdown" key on purpose — see the docstring.  The
+            # unparseable response is still persisted by the caller via
+            # _save_raw_response() for post-mortem.
         }
 
 
@@ -557,6 +565,19 @@ def run_conversion(
             "step_total_tokens": step_total,
             "latency_s": round(latency, 2),
         })
+
+        if verdict == "PARSE_ERROR":
+            # The response could not be parsed after every repair attempt, so
+            # this pass produced no usable correction.  Keep the Markdown from
+            # before the pass and stop: neither the CLEAN early-stop nor the
+            # diminishing-returns check can fire on errors_found=-1, so the
+            # loop would otherwise burn every remaining iteration re-auditing
+            # nothing.  The raw response was saved above for post-mortem.
+            logger.warning(
+                "⚠️ Refinement %d returned an unparseable response — keeping the "
+                "Markdown from before this pass and stopping refinement.", i,
+            )
+            break
 
         current_markdown = corrected_markdown
         iteration_markdowns.append(current_markdown)

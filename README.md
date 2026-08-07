@@ -89,6 +89,7 @@ pdf2md/
 │   └── translation-spike.md  # Issue #65 findings and recommendation
 ├── testing/
 │   ├── conftest.py         # Shared fixtures (in-memory PDF/PNG generators)
+│   ├── test_auth.py        # Auth factory — api-mode env mirrors the active machine profile
 │   ├── test_config.py      # Config loading, saving, merging
 │   ├── test_models.py      # Data models and properties
 │   ├── test_postprocess.py # Markdown cleaning pipeline
@@ -99,6 +100,7 @@ pdf2md/
 │   ├── test_chunk_runner.py  # Shared chunk-conversion orchestration (split + max_chunks slice, resume, error policy, on_chunk hooks)
 │   ├── test_model_backend_consistency.py  # Backend-attribute and model-id contract guard (shared refinement loop)
 │   ├── test_pipeline.py     # Pipeline orchestration (single-file convert flow)
+│   ├── test_refinement.py   # Refinement loop — unparseable response keeps the good markdown and stops
 │   ├── test_execute_worker.py  # Convert File tab worker — artifact cleanup
 │   ├── test_execute_render.py  # Convert File tab result-rendering helpers
 │   ├── test_logger_exec.py  # Structured JSONL execution logging
