@@ -77,8 +77,32 @@ def build_client(auth_mode: str, project_id: str, location: str) -> object:
         logger.info("ℹ️ Authenticating via Vertex AI Express Mode (API key)")
         logger.debug("API key present (%d chars), project=%s, location=%s",
                       len(api_key), project_id, location)
-        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
-        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", location)
+        # Mirror the *active* machine profile into the process environment on
+        # every call — never ``setdefault``.  This process is long-lived (the
+        # Streamlit app), so a setdefault pins the first profile's values for
+        # the process lifetime: switching the active machine in Settings would
+        # silently keep converting against the old project/location, and a
+        # pre-exported GOOGLE_CLOUD_* would override config.json outright.
+        # These cannot be handed to the client instead, the way the gcloud
+        # branch below does: google-genai rejects project/location alongside
+        # api_key ("Project/location and API key are mutually exclusive in the
+        # client initializer").
+        for _var, _value in (
+            ("GOOGLE_CLOUD_PROJECT", project_id),
+            ("GOOGLE_CLOUD_LOCATION", location),
+        ):
+            _previous = os.environ.get(_var)
+            if _previous == _value or (_previous is None and not _value):
+                continue
+            if _previous is not None:
+                logger.info(
+                    "ℹ️ %s: %r → %r (active machine profile wins)",
+                    _var, _previous, _value,
+                )
+            if _value:
+                os.environ[_var] = _value
+            else:
+                os.environ.pop(_var, None)
         client = genai.Client(
             vertexai=True,
             api_key=api_key,
