@@ -14,6 +14,25 @@ from src.config import (
     save_settings,
 )
 
+# Widget keys inside `settings_form` whose defaults come from the *edited*
+# machine profile. Streamlit only applies `value=`/`index=` the first time a
+# keyed widget is created, so these must be dropped from session state when the
+# edited machine changes — otherwise the form keeps showing the previous
+# machine's values. Un-keyed widgets used to reset implicitly (their auto id
+# hashes the default); explicit keys make that reset our job.
+_MACHINE_FIELD_KEYS = (
+    "settings_machine_name",
+    "settings_project_id",
+    "settings_auth_mode",
+    "settings_location",
+    "settings_model",
+    "settings_refine_iterations",
+    "settings_clean_stop_max_errors",
+    "settings_diminishing_returns",
+    "settings_extraction_prompt",
+    "settings_refinement_prompt",
+)
+
 
 def run() -> None:
     """Render the Settings tab."""
@@ -44,6 +63,12 @@ def run() -> None:
         "Edit machine", machine_names, index=active_idx, key="settings_edit_machine"
     )
     edit_machine = next((m for m in cfg.machines if m.name == edit_machine_name), cfg.machines[0])
+
+    # Re-seed the machine-scoped form widgets whenever the edited machine changes.
+    if st.session_state.get("settings_loaded_machine") != edit_machine_name:
+        for _field_key in _MACHINE_FIELD_KEYS:
+            st.session_state.pop(_field_key, None)
+        st.session_state["settings_loaded_machine"] = edit_machine_name
 
     mc1, mc2 = st.columns([1, 1])
     with mc1:
@@ -78,6 +103,7 @@ def run() -> None:
             BACKENDS,
             index=BACKENDS.index(cfg.backend) if cfg.backend in BACKENDS else 0,
             help=_backend_help,
+            key="settings_backend",
         )
 
         st.markdown("---")
@@ -88,6 +114,7 @@ def run() -> None:
             "Machine name",
             value=edit_machine.name,
             help="Label shown in the sidebar machine selector.",
+            key="settings_machine_name",
         )
 
         s1, s2, s3 = st.columns([2, 2, 2])
@@ -95,25 +122,32 @@ def run() -> None:
             new_project_id = st.text_input(
                 "Project ID", value=edit_machine.project_id,
                 help="Google Cloud project ID for this machine.",
+                key="settings_project_id",
             )
             new_auth_mode: str = st.selectbox(
                 "Auth Mode", ["api", "gcloud"],
                 index=0 if edit_machine.auth_mode == "api" else 1,
+                key="settings_auth_mode",
             )
         with s2:
-            new_location = st.text_input("Location", value=edit_machine.location)
+            new_location = st.text_input(
+                "Location", value=edit_machine.location, key="settings_location"
+            )
             _model_opts = GEMINI_MODELS
             new_model: str = st.selectbox(
                 "Model",
                 _model_opts,
                 index=_model_opts.index(edit_machine.model) if edit_machine.model in _model_opts else 0,
+                key="settings_model",
             )
         with s3:
             new_refine = st.number_input(
-                "Refinement Passes", min_value=0, value=edit_machine.refine_iterations, step=1
+                "Refinement Passes", min_value=0, value=edit_machine.refine_iterations, step=1,
+                key="settings_refine_iterations",
             )
             new_cse = st.number_input(
-                "Max Errors (CLEAN)", min_value=-1, value=edit_machine.clean_stop_max_errors, step=1
+                "Max Errors (CLEAN)", min_value=-1, value=edit_machine.clean_stop_max_errors, step=1,
+                key="settings_clean_stop_max_errors",
             )
             new_diminishing_returns = st.checkbox(
                 "Enable diminishing returns stop",
@@ -122,6 +156,7 @@ def run() -> None:
                     "When enabled (default), refinement stops early if successive passes show no "
                     "reduction in errors."
                 ),
+                key="settings_diminishing_returns",
             )
 
         _ext_prompts = list_extraction_prompts()
@@ -132,12 +167,14 @@ def run() -> None:
                 "Extraction Prompt", _ext_prompts,
                 index=_ext_prompts.index(edit_machine.extraction_prompt)
                 if edit_machine.extraction_prompt in _ext_prompts else 0,
+                key="settings_extraction_prompt",
             )
         with s5:
             new_ref_prompt: str = st.selectbox(
                 "Refinement Prompt", _ref_prompts,
                 index=_ref_prompts.index(edit_machine.refinement_prompt)
                 if edit_machine.refinement_prompt in _ref_prompts else 0,
+                key="settings_refinement_prompt",
             )
 
         st.markdown("---")
@@ -145,11 +182,13 @@ def run() -> None:
         p1, p2 = st.columns([2, 2])
         with p1:
             new_chunk_size = st.number_input(
-                "Chunk Size (pages)", min_value=0, value=cfg.processing.chunk_size, step=5
+                "Chunk Size (pages)", min_value=0, value=cfg.processing.chunk_size, step=5,
+                key="settings_chunk_size",
             )
         with p2:
             new_chunk_overlap = st.number_input(
-                "Chunk Overlap (pages)", min_value=0, value=cfg.processing.chunk_overlap, step=1
+                "Chunk Overlap (pages)", min_value=0, value=cfg.processing.chunk_overlap, step=1,
+                key="settings_chunk_overlap",
             )
 
         new_validate = st.checkbox(
@@ -160,18 +199,22 @@ def run() -> None:
                 "and Batch Convert tabs will be pre-checked. Validation runs a post-conversion "
                 "quality check on the output markdown to detect structural issues."
             ),
+            key="settings_validate_after_convert",
         )
 
         st.markdown("---")
         st.markdown("#### Batch")
         b1, b2 = st.columns([2, 4])
         with b1:
-            new_recursive = st.checkbox("Recursive folder scan", value=cfg.batch.recursive)
+            new_recursive = st.checkbox(
+                "Recursive folder scan", value=cfg.batch.recursive, key="settings_recursive"
+            )
         with b2:
             new_extensions = st.text_input(
                 "File extensions (comma-separated)",
                 value=", ".join(cfg.batch.extensions),
                 help='e.g. ".pdf, .PDF"',
+                key="settings_extensions",
             )
 
         st.markdown("---")
@@ -182,11 +225,13 @@ def run() -> None:
             new_exec_log_dir = st.text_input(
                 "Exec log directory", value=cfg.logging.exec_log_dir,
                 help="Folder for execution JSONL logs.",
+                key="settings_exec_log_dir",
             )
         with l2:
             new_exec_log_file = st.text_input(
                 "Exec log filename", value=cfg.logging.exec_log_file,
                 help="Filename inside the exec log directory.",
+                key="settings_exec_log_file",
             )
         st.caption("Application rotating file logs (see `src/logging_config.py`).")
         l3, l4, l5 = st.columns([2, 2, 2])
@@ -194,6 +239,7 @@ def run() -> None:
             new_app_log_dir = st.text_input(
                 "App log directory", value=cfg.logging.log_dir,
                 help="Folder for rotating app log files.",
+                key="settings_log_dir",
             )
         with l4:
             new_log_max_bytes = st.number_input(
@@ -202,6 +248,7 @@ def run() -> None:
                 value=int(cfg.logging.log_max_bytes),
                 step=1048576,
                 help="Rotate when a log file reaches this size (bytes).",
+                key="settings_log_max_bytes",
             )
         with l5:
             new_log_backup_count = st.number_input(
@@ -210,10 +257,13 @@ def run() -> None:
                 value=int(cfg.logging.log_backup_count),
                 step=1,
                 help="Number of rotated log files to keep.",
+                key="settings_log_backup_count",
             )
 
         st.markdown("---")
-        submitted = st.form_submit_button("💾 Save settings", type="primary")
+        submitted = st.form_submit_button(
+            "💾 Save settings", type="primary", key="settings_submit"
+        )
 
     if submitted:
         exts = [e.strip() for e in new_extensions.split(",") if e.strip()]

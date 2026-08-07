@@ -66,6 +66,11 @@ flowchart TB
   VERTEXAI --> REFINEMENT
   VERTEXAI --> AUTH
 
+  subgraph pricingmod["src/ — pricing"]
+    VERTEXPRICING["vertexai_pricing.py\nlive fetch + HTML parse -> cache,\nload_pricing / calculate_cost"]
+  end
+  VERTEXTAB --> VERTEXPRICING
+
   subgraph postproc["Post-processing + reporting"]
     POSTPROCESS["postprocess.py\nmarkdown cleaning pipeline"]
     VALIDATION["validation.py\nquality validation -> ValidationReport"]
@@ -95,9 +100,11 @@ flowchart TB
     VERTEX["Google Vertex AI / Gemini API"]
     OFFICE["Microsoft Office COM (Windows) / docling (other OS)"]
     PYMUPDF["PyMuPDF (fitz)\nimage -> PDF, page split"]
+    PRICINGPAGE["cloud.google.com\nVertex AI generative-ai pricing page"]
   end
   HUBGEMINI -->|Anthropic document block| HUB
   VERTEXAI -->|google-genai| VERTEX
+  VERTEXPRICING -->|HTTPS scrape| PRICINGPAGE
   FILECONV --> OFFICE
   FILECONV --> PYMUPDF
   CHUNKER --> PYMUPDF
@@ -110,6 +117,7 @@ flowchart TB
   REFINEMENT --> PROMPTS
   LOGGEREXEC --> EXECLOG
   LOG --> EXECLOG
+  VERTEXPRICING --> PRICING
   VERTEXTAB --> PRICING
 
   subgraph spikes["spikes/ — throwaway evaluation code, never imported by src or app"]
@@ -125,3 +133,4 @@ flowchart TB
   TESTS -.->|covers| orchestration
   TESTS -.->|covers| backends
   TESTS -.->|covers| postproc
+  TESTS -.->|covers| pricingmod
