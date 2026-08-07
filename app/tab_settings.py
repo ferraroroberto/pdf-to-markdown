@@ -304,17 +304,6 @@ def run() -> None:
         cfg.logging.log_max_bytes = int(new_log_max_bytes)
         cfg.logging.log_backup_count = int(new_log_backup_count)
 
-        # Sync vertexai from the edited machine so save_settings persists correctly
-        cfg.vertexai.project_id = new_project_id
-        cfg.vertexai.auth_mode = new_auth_mode
-        cfg.vertexai.location = new_location
-        cfg.vertexai.model = new_model
-        cfg.vertexai.refine_iterations = int(new_refine)
-        cfg.vertexai.clean_stop_max_errors = int(new_cse)
-        cfg.vertexai.diminishing_returns_enabled = new_diminishing_returns
-        cfg.vertexai.extraction_prompt = new_ext_prompt
-        cfg.vertexai.refinement_prompt = new_ref_prompt
-
         # save_settings will update active machine with vertexai values
         # but we edited a specific machine directly above, so just write all machines
         _write_all_machines(cfg)
