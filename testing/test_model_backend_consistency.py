@@ -73,14 +73,17 @@ class TestModelIdConsistency:
             )
 
     def test_ui_dropdowns_source_the_shared_constant(self):
-        """All three UI model lists must reference GEMINI_MODELS, not inline copies.
+        """Every UI model list must reference GEMINI_MODELS, not an inline copy.
 
-        Read the source as text rather than importing the modules — the app
-        package pulls in Streamlit, which is a UI-only dependency we don't want
-        to require in the test environment.
+        The Convert File and Batch tabs render the model selector through the
+        one shared ``_common.render_advanced_vertexai_options`` block, so
+        ``_common.py`` is where their dropdown list lives; the Settings tab has
+        its own. Read the source as text rather than importing the modules —
+        the app package pulls in Streamlit, which is a UI-only dependency we
+        don't want to require in the test environment.
         """
         app_dir = Path(__file__).resolve().parent.parent / "app"
-        for filename in ("execute.py", "tab_batch.py", "tab_settings.py"):
+        for filename in ("_common.py", "tab_settings.py"):
             text = (app_dir / filename).read_text(encoding="utf-8")
             assert "GEMINI_MODELS" in text, (
                 f"{filename} does not reference the shared GEMINI_MODELS constant"
@@ -109,7 +112,12 @@ class TestDefaultModelSingleSource:
         """
         repo_root = Path(__file__).resolve().parent.parent
         offenders: list[str] = []
-        for rel in ("app/execute.py", "app/tab_batch.py", "src/vertexai_backend.py"):
+        for rel in (
+            "app/_common.py",
+            "app/execute.py",
+            "app/tab_batch.py",
+            "src/vertexai_backend.py",
+        ):
             text = (repo_root / rel).read_text(encoding="utf-8")
             for marker in (', "gemini-2.5-pro")', ", 'gemini-2.5-pro')"):
                 if marker in text:
