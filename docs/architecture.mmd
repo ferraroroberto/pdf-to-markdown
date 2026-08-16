@@ -98,7 +98,7 @@ flowchart TB
   LOGSTREAM --> LOGGINGCFG
 
   subgraph external["External dependencies"]
-    HUB["local LLM hub\n127.0.0.1:8000 (claude-local-calls)"]
+    HUB["local LLM hub\n127.0.0.1:8000 (local-llm-hub)"]
     VERTEX["Google Vertex AI / Gemini API"]
     OFFICE["Microsoft Office COM (Windows) / docling (other OS)"]
     PYMUPDF["PyMuPDF (fitz)\nimage -> PDF, page split"]
